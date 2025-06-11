@@ -26,7 +26,7 @@ def get_hf_response(prompt_text, model_name=DEFAULT_MODEL_HF, temperature=0.0, m
         # device = "cuda" if torch.cuda.is_available() else "cpu" # device_map="auto" handles this
 
         if model_name not in model_cache:
-            print(f"Loading model: {model_name} to {device}...")
+            # print(f"Loading model: {model_name} to {device}...")
             model_cache[model_name] = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype="auto",  # Automatically select appropriate dtype

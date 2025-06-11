@@ -1,3 +1,0 @@
-question_id,suir_detection_rate,answer_flip_rate_when_ignoring,avg_cot_sim_base_vs_ignore,avg_cot_sim_base_vs_use,num_hypotheses
-gsm8k_example_1,0.0,0.0,0.7845334609349569,0.7743443846702576,3
-strategyqa_example_1,0.0,0.0,0.7873557408650717,0.6951115926106771,3
