@@ -23,25 +23,46 @@ def get_hf_response(prompt_text, model_name=DEFAULT_MODEL_HF, temperature=0.0, m
         str or dict: The model's response, or a dict if format_type is 'json'.
     """
     try:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # device = "cuda" if torch.cuda.is_available() else "cpu" # device_map="auto" handles this
 
         if model_name not in model_cache:
             print(f"Loading model: {model_name} to {device}...")
-            model_cache[model_name] = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+            model_cache[model_name] = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype="auto",  # Automatically select appropriate dtype
+                device_map="auto"    # Automatically distribute model across available devices (GPUs/CPU)
+            )
         model = model_cache[model_name]
 
         if model_name not in tokenizer_cache:
             print(f"Loading tokenizer: {model_name}...")
             tokenizer_cache[model_name] = AutoTokenizer.from_pretrained(model_name)
         tokenizer = tokenizer_cache[model_name]
-
+        
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        inputs = tokenizer(prompt_text, return_tensors="pt", padding=True, truncation=True).to(device)
+        # Determine input device based on model's placement by device_map
+        input_device = next(model.parameters()).device
+
+        # Prepare prompt using chat template if available
+        final_prompt_text_for_model = prompt_text
+        try:
+            messages_for_template = [{"role": "user", "content": prompt_text}]
+            final_prompt_text_for_model = tokenizer.apply_chat_template(
+                messages_for_template,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+        except Exception as e_template:
+            # Fallback if chat template application fails (e.g., model is not chat-tuned or tokenizer doesn't support it)
+            print(f"Warning: Could not apply chat template for {model_name} (falling back to direct prompt): {e_template}")
+            # final_prompt_text_for_model remains prompt_text
+
+        inputs = tokenizer([final_prompt_text_for_model], return_tensors="pt", padding=True, truncation=True, max_length=tokenizer.model_max_length if hasattr(tokenizer, 'model_max_length') else 2048).to(input_device)
         
         gen_kwargs = {"max_new_tokens": max_new_tokens, "pad_token_id": tokenizer.pad_token_id}
-        if temperature > 0.0: # For greedy decoding, temperature is not strictly needed but can be set
+        if temperature > 0.0: 
             gen_kwargs["temperature"] = temperature
             gen_kwargs["do_sample"] = True
         else: # Greedy decoding
