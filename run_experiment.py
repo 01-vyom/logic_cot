@@ -93,7 +93,7 @@ def run_full_experiment():
             hypotheses_to_probe = []
             if GENERATE_HYPOTHESES_DYNAMICALLY:
                 print("  Generating implicit hypotheses...")
-                generated_hypotheses, raw_hypo_gen = generate_hypotheses(
+                generated_hypotheses, raw_hypo_gen = Error in hypothesis generation: JSON decode error(
                     question_text, few_shot_text_for_hypo, MODEL_NAME, TEMPERATURE_HYPOTHESIS_GEN
                 )
                 experiment_log["generated_hypotheses"] = generated_hypotheses

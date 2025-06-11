@@ -10,14 +10,12 @@ Your task is to list 3-5 potential implicit structural cues, unstated common-sen
 
 You MUST provide your response *only* as a single, valid JSON object. Do NOT include any other text, explanations, comments, or markdown formatting before or after the JSON object.
 The JSON object MUST have a single key "hypotheses", whose value is a list of strings. For example:
-{
-  {
+{{
   "hypotheses": [
     "The model might assume the longest answer option is usually correct if it's a multiple choice question.",
     "The model might use a keyword from the question to retrieve a common but potentially misleading fact."
   ]
-  }
-}
+}}
 Ensure your entire output is exclusively this JSON object.
 """
 

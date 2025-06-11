@@ -3,13 +3,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import json
 import re
 
-DEFAULT_MODEL_HF = 'Qwen/Qwen3-0.6B' # Default Hugging Face model (e.g., 'gpt2', 'mistralai/Mistral-7B-v0.1')
+DEFAULT_MODEL_HF = 'Qwen/Qwen3-4B' # Default Hugging Face model (e.g., 'gpt2', 'mistralai/Mistral-7B-v0.1')
 
 # Global cache for models and tokenizers to avoid reloading them repeatedly
 model_cache = {}
 tokenizer_cache = {}
 
-def get_hf_response(prompt_text, model_name=DEFAULT_MODEL_HF, temperature=0.0, max_new_tokens=512, format_type=None):
+def get_hf_response(prompt_text, model_name=DEFAULT_MODEL_HF, temperature=0.0, max_new_tokens=32768, format_type=None):
     """
     Sends a prompt to a Hugging Face model and returns the response.
     Args:
@@ -52,42 +52,80 @@ def get_hf_response(prompt_text, model_name=DEFAULT_MODEL_HF, temperature=0.0, m
             final_prompt_text_for_model = tokenizer.apply_chat_template(
                 messages_for_template,
                 tokenize=False,
-                add_generation_prompt=True
+                add_generation_prompt=True,
+                # enable_thinking=True # Qwen specific, might need conditional logic or try-except
             )
+            # More robust way to add Qwen-specific args if tokenizer supports them
+            if "qwen" in model_name.lower():
+                try:
+                    final_prompt_text_for_model = tokenizer.apply_chat_template(
+                        messages_for_template,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        enable_thinking=True
+                    )
+                    print(f"Info: Applied chat template with enable_thinking=True for {model_name}.")
+                except TypeError: # If enable_thinking is not a valid kwarg for this tokenizer
+                    print(f"Info: Applied chat template (without enable_thinking) for {model_name}.")
+            else:
+                 print(f"Info: Applied chat template for {model_name}.")
+
         except Exception as e_template:
             # Fallback if chat template application fails (e.g., model is not chat-tuned or tokenizer doesn't support it)
             print(f"Warning: Could not apply chat template for {model_name} (falling back to direct prompt): {e_template}")
             # final_prompt_text_for_model remains prompt_text
 
         inputs = tokenizer([final_prompt_text_for_model], return_tensors="pt", padding=True, truncation=True, max_length=tokenizer.model_max_length if hasattr(tokenizer, 'model_max_length') else 2048).to(input_device)
-        
+
         gen_kwargs = {"max_new_tokens": max_new_tokens, "pad_token_id": tokenizer.pad_token_id}
-        if temperature > 0.0: 
+        if temperature > 0.0:
             gen_kwargs["temperature"] = temperature
             gen_kwargs["do_sample"] = True
         else: # Greedy decoding
             gen_kwargs["do_sample"] = False
-            
+
         output_sequences = model.generate(**inputs, **gen_kwargs)
-        
+
         # Decode only the newly generated tokens
-        generated_text = tokenizer.decode(output_sequences[0][inputs.input_ids.shape[-1]:], skip_special_tokens=True)
+        full_generated_text = tokenizer.decode(output_sequences[0][inputs.input_ids.shape[-1]:], skip_special_tokens=True)
+
+        # Handle potential <think>...</think> blocks by extracting content after the last </think>
+        think_tag_end = "</think>"
+        processed_text = full_generated_text
+        if think_tag_end in full_generated_text:
+            try:
+                index_after_think_tag = full_generated_text.rindex(think_tag_end) + len(think_tag_end)
+                processed_text = full_generated_text[index_after_think_tag:].strip()
+                print(f"Info: Extracted content after last </think> tag. Preview: '{processed_text[:100]}...'")
+            except ValueError: # Should not happen if think_tag_end is in generated_text_full
+                pass # Fallback to using full_generated_text
 
         if format_type == 'json':
             try:
-                return json.loads(generated_text)
+                return json.loads(processed_text)
             except json.JSONDecodeError:
-                print(f"Warning: Could not decode JSON from model response: {generated_text}")
-                match = re.search(r'```json\s*([\s\S]*?)\s*```', generated_text, re.DOTALL)
+                print(f"Warning: Could not decode JSON directly from processed model response: '{processed_text[:200]}...'")
+                match = re.search(r'```json\s*([\s\S]*?)\s*```', processed_text, re.DOTALL)
                 if match:
                     try:
                         return json.loads(match.group(1))
                     except json.JSONDecodeError:
                         print(f"Warning: Could not decode extracted JSON: {match.group(1)}")
-                        return {"error": "JSON decode error", "raw_response": generated_text}
-                return {"error": "JSON decode error", "raw_response": generated_text}
+                        return {"error": "JSON decode error from extracted markdown", "raw_response": processed_text}
+                # If no markdown, try to find the first '{' and last '}' as a last resort
+                try:
+                    json_start_index = processed_text.find('{')
+                    json_end_index = processed_text.rfind('}')
+                    if json_start_index != -1 and json_end_index != -1 and json_start_index < json_end_index:
+                        potential_json_str = processed_text[json_start_index : json_end_index+1]
+                        parsed_json = json.loads(potential_json_str)
+                        print(f"Info: Successfully parsed JSON by finding {{...}} block from: '{potential_json_str[:100]}...'")
+                        return parsed_json
+                except json.JSONDecodeError:
+                    pass # Fall through to return error
+                return {"error": "JSON decode error, no clear JSON block or markdown", "raw_response": processed_text}
         else:
-            return generated_text
+            return processed_text # Return the processed text (potentially without <think> block)
     except Exception as e:
         print(f"Error communicating with Hugging Face model: {e}")
         if format_type == 'json':
@@ -126,7 +164,6 @@ def parse_articulation_and_cot(text_response):
 if __name__ == '__main__':
     print("Testing HF model call:")
     test_prompt = "What is the capital of France? The final answer is " # Prompting for a specific end
-    # Note: Small models like gpt2 might not follow "The final answer is" well without more specific prompting or fine-tuning.
     basic_response = get_hf_response(test_prompt, model_name='gpt2', temperature=0.1, max_new_tokens=50)
     print(f"Prompt: {test_prompt}\nResponse: {basic_response}\n")
 
