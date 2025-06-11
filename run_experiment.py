@@ -2,11 +2,11 @@ import os
 import json
 import time
 from irac_core import get_baseline_cot_and_answer, generate_hypotheses, probe_hypothesis
-from ollama_utils import DEFAULT_MODEL
+from hf_utils import DEFAULT_MODEL_HF # Changed import
 from datasets import load_dataset
 
 # --- Configuration ---
-MODEL_NAME = DEFAULT_MODEL  # Or your specific model
+MODEL_NAME = DEFAULT_MODEL_HF  # Or your specific Hugging Face model
 TEMPERATURE_BASELINE = 0.0
 TEMPERATURE_HYPOTHESIS_GEN = 0.7 # Higher for more diverse hypotheses
 TEMPERATURE_PROBE = 0.0

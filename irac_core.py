@@ -1,4 +1,4 @@
-from ollama_utils import get_ollama_response, parse_articulation_and_cot, DEFAULT_MODEL
+from hf_utils import get_hf_response, parse_articulation_and_cot, DEFAULT_MODEL_HF
 from irac_prompts import (
     BASELINE_COT_PROMPT_TEMPLATE,
     HYPOTHESIS_GENERATION_PROMPT_TEMPLATE,
@@ -12,7 +12,7 @@ import re
 def get_baseline_cot_and_answer(question_text, model_name, temperature=0.0):
     """Gets the baseline CoT and answer for a question."""
     prompt = BASELINE_COT_PROMPT_TEMPLATE.format(question=question_text)
-    full_response = get_ollama_response(prompt, model=model_name, temperature=temperature)
+    full_response = get_hf_response(prompt, model_name=model_name, temperature=temperature)
     
     # Basic parsing for CoT and answer from baseline
     # This might need to be more robust depending on model's output format
@@ -37,8 +37,7 @@ def generate_hypotheses(question_text, few_shot_examples_text, model_name, tempe
         question=question_text,
         few_shot_examples=few_shot_examples_text
     )
-    # Expecting JSON output, Ollama's format='json' can help
-    response_data = get_ollama_response(prompt, model=model_name, temperature=temperature, format_type='json')
+    response_data = get_hf_response(prompt, model_name=model_name, temperature=temperature, format_type='json')
     
     if isinstance(response_data, dict) and "hypotheses" in response_data and isinstance(response_data["hypotheses"], list):
         return response_data["hypotheses"], response_data # return raw too
@@ -72,14 +71,14 @@ def probe_hypothesis(question_text, hypothesis, probe_type, model_name, temperat
     else:
         raise ValueError("Invalid probe_type. Must be 'use' or 'ignore'.")
 
-    full_response = get_ollama_response(prompt, model=model_name, temperature=temperature)
+    full_response = get_hf_response(prompt, model_name=model_name, temperature=temperature)
     articulation, cot, answer = parse_articulation_and_cot(full_response)
     return articulation, cot, answer, full_response
 
 if __name__ == '__main__':
     # Example usage (will make actual Ollama calls if Ollama is running)
     test_question = "A bakery made 30 apple pies and 40 cherry pies. They sold 1/3 of the apple pies and 1/2 of the cherry pies. They then baked 15 more apple pies. How many apple pies do they have now?"
-    model_to_test = DEFAULT_MODEL # Make sure this model is pulled in Ollama
+    model_to_test = DEFAULT_MODEL_HF 
 
     print(f"--- Testing Baseline CoT for Q: '{test_question[:50]}...' ---")
     c_base, a_base, raw_baseline = get_baseline_cot_and_answer(test_question, model_to_test)
