@@ -3,7 +3,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import json
 import re
 
-DEFAULT_MODEL_HF = 'gpt2' # Default Hugging Face model (e.g., 'gpt2', 'mistralai/Mistral-7B-v0.1')
+DEFAULT_MODEL_HF = 'Qwen/Qwen3-0.6B' # Default Hugging Face model (e.g., 'gpt2', 'mistralai/Mistral-7B-v0.1')
 
 # Global cache for models and tokenizers to avoid reloading them repeatedly
 model_cache = {}

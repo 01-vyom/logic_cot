@@ -12,10 +12,10 @@ TEMPERATURE_HYPOTHESIS_GEN = 0.7 # Higher for more diverse hypotheses
 TEMPERATURE_PROBE = 0.0
 NUM_HYPOTHESES_TO_PROBE_PER_QUESTION = 3 # How many of the generated hypotheses to test
 OUTPUT_DIR = "experiment_results"
-DATASET_NAME = "gsm8k"
+DATASET_NAME = "openai/gsm8k"
 DATASET_CONFIG = "main"
 DATASET_SPLIT = "test" # or "train"
-MAX_QUESTIONS_TO_PROCESS = 5 # Set to None to process all questions in the split
+MAX_QUESTIONS_TO_PROCESS = 10 # Set to None to process all questions in the split
 
 # --- Dataset ---
 
