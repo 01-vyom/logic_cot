@@ -3,10 +3,38 @@ import json
 import pandas as pd
 from sentence_transformers import SentenceTransformer, util
 import numpy as np
+import time
+import re
+import warnings
+from tqdm import tqdm
+warnings.filterwarnings("ignore", category=FutureWarning)
 
-RESULTS_DIR = "experiment_results"
-SUMMARY_FILE_JSON = "irac_analysis_summary.json"
-SUMMARY_FILE_CSV = "irac_analysis_summary.csv"
+from hf_utils import get_hf_response, DEFAULT_MODEL_HF # Assuming DEFAULT_MODEL_HF can be a powerful one
+from irac_prompts import HUMAN_EVAL_IMPLICIT_FACTOR_RELEVANCE, HUMAN_EVAL_FAITHFULNESS_CHANGE
+
+RESULTS_DIR = "/orange/daisyw/v.pathak/logic_cot/experiment_results"
+ALL_RESULTS_CSV = os.path.join(RESULTS_DIR, "all_experiment_results.csv") # Path to the CSV from run_experiment.py
+SUMMARY_FILE_JSON = os.path.join(RESULTS_DIR, "irac_analysis_summary.json")
+SUMMARY_FILE_CSV = os.path.join(RESULTS_DIR, "irac_analysis_summary.csv")
+
+# --- LLM Judge Configuration ---
+# Use a potentially larger/more capable model for judging
+LLM_JUDGE_MODEL_NAME = DEFAULT_MODEL_HF # Or specify a different one, e.g., "mistralai/Mixtral-8x7B-Instruct-v0.1"
+LLM_JUDGE_TEMPERATURE = 0.0 
+LLM_JUDGE_MAX_NEW_TOKENS = 5_000 # Responses are expected to be short
+
+def print_analyze_results_config():
+    """Prints the configuration parameters for the analysis run."""
+    print("\n--- Analysis Configuration ---")
+    print(f"RESULTS_DIR: {RESULTS_DIR}")
+    print(f"ALL_RESULTS_CSV: {ALL_RESULTS_CSV}")
+    print(f"SUMMARY_FILE_JSON: {SUMMARY_FILE_JSON}")
+    print(f"SUMMARY_FILE_CSV: {SUMMARY_FILE_CSV}")
+    print(f"LLM_JUDGE_MODEL_NAME: {LLM_JUDGE_MODEL_NAME}")
+    print(f"LLM_JUDGE_TEMPERATURE: {LLM_JUDGE_TEMPERATURE}")
+    print(f"LLM_JUDGE_MAX_NEW_TOKENS: {LLM_JUDGE_MAX_NEW_TOKENS}")
+    print(f"Similarity Model Used: {'all-MiniLM-L6-v2' if similarity_model else 'Not loaded/Skipped'}")
+    print("------------------------------\n")
 
 # Load a sentence transformer model for semantic similarity
 # Using a small model for local execution, larger models might be better
@@ -29,16 +57,81 @@ def calculate_semantic_similarity(text1, text2):
         print(f"Error calculating similarity: {e}")
         return None
 
-def analyze_single_experiment_log(log_data):
+def parse_llm_judge_relevance(response_text):
+    """Parses the LLM judge's relevance response."""
+    response_text_lower = response_text.lower()
+    if "yes" in response_text_lower:
+        return "Yes"
+    elif "no" in response_text_lower:
+        return "No"
+    elif "unsure" in response_text_lower:
+        return "Unsure"
+    print(f"Warning: Could not parse LLM judge relevance: {response_text}")
+    return "PARSE_ERROR_JUDGE_RELEVANCE"
+
+def parse_llm_judge_faithfulness(response_text):
+    """Parses the LLM judge's faithfulness response and maps to a numerical scale."""
+    response_text_lower = response_text.lower()
+    if "significantly less faithful" in response_text_lower:
+        return "Significantly Less Faithful" # Numerical: -2
+    elif "somewhat less faithful" in response_text_lower:
+        return "Somewhat Less Faithful"   # Numerical: -1
+    elif "no change" in response_text_lower:
+        return "No Change"                # Numerical: 0
+    elif "somewhat more faithful" in response_text_lower:
+        return "Somewhat More Faithful"   # Numerical: 1
+    elif "significantly more faithful" in response_text_lower:
+        return "Significantly More Faithful" # Numerical: 2
+    print(f"Warning: Could not parse LLM judge faithfulness: {response_text}")
+    return "PARSE_ERROR_JUDGE_FAITHFULNESS"
+
+def get_llm_judge_responses(question_text, c_base, a_base, h_implicit, articulation_h_ignore, cot_ignore_h, a_ignore_h):
+    """Gets evaluations from an LLM-as-a-judge."""
+    relevance_prompt = HUMAN_EVAL_IMPLICIT_FACTOR_RELEVANCE.format(
+        question=question_text,
+        A_base=a_base,
+        C_base=c_base,
+        H_implicit=h_implicit
+    )
+    faithfulness_prompt = HUMAN_EVAL_FAITHFULNESS_CHANGE.format(
+        question=question_text,
+        A_base=a_base,
+        C_base=c_base,
+        H_implicit=h_implicit,
+        articulation_H_ignore=articulation_h_ignore,
+        CoT_ignore_H=cot_ignore_h,
+        A_ignore_H=a_ignore_h
+    )
+
+    # print(f"    Asking LLM Judge ({LLM_JUDGE_MODEL_NAME}) for relevance...")
+    raw_relevance_response = get_hf_response(relevance_prompt, LLM_JUDGE_MODEL_NAME, temperature=LLM_JUDGE_TEMPERATURE, max_new_tokens=LLM_JUDGE_MAX_NEW_TOKENS)
+    # time.sleep(0.5) # Small delay
+    parsed_relevance = parse_llm_judge_relevance(raw_relevance_response)
+
+    # print(f"    Asking LLM Judge ({LLM_JUDGE_MODEL_NAME}) for faithfulness...")
+    raw_faithfulness_response = get_hf_response(faithfulness_prompt, LLM_JUDGE_MODEL_NAME, temperature=LLM_JUDGE_TEMPERATURE, max_new_tokens=LLM_JUDGE_MAX_NEW_TOKENS)
+    # time.sleep(0.5) # Small delay
+    parsed_faithfulness = parse_llm_judge_faithfulness(raw_faithfulness_response)
+
+    return parsed_relevance, raw_relevance_response, parsed_faithfulness, raw_faithfulness_response
+
+
+def analyze_single_experiment_log(log_data, perform_llm_judge_eval=True):
     analysis = {
         "question_id": log_data["question_id"],
         "question_text": log_data["question_text"],
         "baseline_answer": log_data["baseline_answer"],
+        "baseline_cot": log_data.get("baseline_cot", ""), # Ensure baseline_cot is included
         "num_hypotheses_probed": 0,
         "suir_detections": 0,
         "answer_flips_when_ignoring": 0,
         "avg_cot_similarity_base_vs_ignore": None,
         "avg_cot_similarity_base_vs_use": None,
+        "llm_judge_relevance_counts": {"Yes": 0, "No": 0, "Unsure": 0, "ParseError": 0},
+        "llm_judge_faithfulness_counts": {
+            "Significantly Less Faithful": 0, "Somewhat Less Faithful": 0, "No Change": 0,
+            "Somewhat More Faithful": 0, "Significantly More Faithful": 0, "ParseError": 0
+        },
         "probes_analysis": []
     }
     
@@ -53,13 +146,13 @@ def analyze_single_experiment_log(log_data):
     cot_similarities_base_vs_ignore = []
     cot_similarities_base_vs_use = []
 
-    for probe in log_data["probes"]:
+    for probe in tqdm(log_data["probes"], desc=f"Analyzing Probes for {log_data['question_id']}", leave=False, disable=not perform_llm_judge_eval): # Disable if not judging to avoid nested bars with no work
         hypothesis = probe["hypothesis"]
         a_use = probe.get("answer_use", "N/A")
         a_ignore = probe.get("answer_ignore", "N/A")
         cot_use = probe.get("cot_use", "")
         cot_ignore = probe.get("cot_ignore", "")
-        articulation_use = probe.get("articulation_use", "") 
+        articulation_use = probe.get("articulation_use", "")
         articulation_ignore = probe.get("articulation_ignore", "")
 
         suir_detected_for_probe = False
@@ -79,8 +172,8 @@ def analyze_single_experiment_log(log_data):
             cot_similarities_base_vs_ignore.append(sim_base_ignore)
         if sim_base_use is not None:
             cot_similarities_base_vs_use.append(sim_base_use)
-            
-        analysis["probes_analysis"].append({
+
+        probe_analysis_item = {
             "hypothesis": hypothesis,
             "baseline_answer_matches_use_answer": baseline_answer == a_use,
             "baseline_answer_differs_from_ignore_answer": baseline_answer != a_ignore,
@@ -89,7 +182,22 @@ def analyze_single_experiment_log(log_data):
             "articulation_ignore_contains_relevant": "relevant" in articulation_ignore.lower(),
             "similarity_base_cot_vs_ignore_cot": sim_base_ignore,
             "similarity_base_cot_vs_use_cot": sim_base_use,
-        })
+        }
+
+        if perform_llm_judge_eval:
+            judge_relevance, raw_judge_relevance, judge_faithfulness, raw_judge_faithfulness = get_llm_judge_responses(
+                log_data["question_text"], baseline_cot, baseline_answer, hypothesis,
+                articulation_ignore, cot_ignore, a_ignore
+            )
+            probe_analysis_item["llm_judge_relevance"] = judge_relevance
+            probe_analysis_item["raw_llm_judge_relevance_output"] = raw_judge_relevance
+            probe_analysis_item["llm_judge_faithfulness"] = judge_faithfulness
+            probe_analysis_item["raw_llm_judge_faithfulness_output"] = raw_judge_faithfulness
+            
+            analysis["llm_judge_relevance_counts"][judge_relevance if judge_relevance in analysis["llm_judge_relevance_counts"] else "ParseError"] += 1
+            analysis["llm_judge_faithfulness_counts"][judge_faithfulness if judge_faithfulness in analysis["llm_judge_faithfulness_counts"] else "ParseError"] += 1
+
+        analysis["probes_analysis"].append(probe_analysis_item)
 
     if cot_similarities_base_vs_ignore:
         analysis["avg_cot_similarity_base_vs_ignore"] = np.mean(cot_similarities_base_vs_ignore)
@@ -98,28 +206,33 @@ def analyze_single_experiment_log(log_data):
         
     return analysis
 
-def main_analyzer():
+def main_analyzer(perform_llm_judge_eval_on_all=True): # Control if LLM judge is run
+    print_analyze_results_config() # Print config at the start
+
     all_analyses = []
-    if not os.path.exists(RESULTS_DIR):
-        print(f"Results directory '{RESULTS_DIR}' not found. Run experiment first.")
+    if not os.path.exists(ALL_RESULTS_CSV):
+        print(f"Results CSV file '{ALL_RESULTS_CSV}' not found. Run experiment first.")
         return
 
-    for filename in os.listdir(RESULTS_DIR):
-        if filename.endswith("_results.json") and filename != "_all_experiment_logs.json":
-            filepath = os.path.join(RESULTS_DIR, filename)
-            try:
-                with open(filepath, 'r') as f:
-                    log_data = json.load(f)
-                print(f"Analyzing {filename}...")
-                analysis_result = analyze_single_experiment_log(log_data)
-                all_analyses.append(analysis_result)
-            except Exception as e:
-                print(f"Error processing file {filename}: {e}")
+    print(f"Reading experiment data from {ALL_RESULTS_CSV}...")
+    try:
+        df_results = pd.read_csv(ALL_RESULTS_CSV)
+    except Exception as e:
+        print(f"Error reading {ALL_RESULTS_CSV}: {e}")
+        return
+
+    for index, row in tqdm(df_results.iterrows(), total=len(df_results), desc="Analyzing Experiment Logs"):
+        try:
+            log_data = json.loads(row["experiment_data_json"])
+            # print(f"Analyzing question_id: {log_data['question_id']} ({index+1}/{len(df_results)})...")
+            analysis_result = analyze_single_experiment_log(log_data, perform_llm_judge_eval=perform_llm_judge_eval_on_all)
+            all_analyses.append(analysis_result)
+        except Exception as e:
+            print(f"Error processing row {index} (question_id: {row.get('question_id', 'N/A')}): {e}")
 
     if not all_analyses:
         print("No experiment logs found to analyze.")
         return
-
     with open(SUMMARY_FILE_JSON, 'w') as f:
         json.dump(all_analyses, f, indent=4)
     print(f"\nDetailed analysis saved to {SUMMARY_FILE_JSON}")
@@ -130,7 +243,10 @@ def main_analyzer():
         "answer_flip_rate_when_ignoring": (item["answer_flips_when_ignoring"] / item["num_hypotheses_probed"]) if item["num_hypotheses_probed"] > 0 else 0,
         "avg_cot_sim_base_vs_ignore": item["avg_cot_similarity_base_vs_ignore"],
         "avg_cot_sim_base_vs_use": item["avg_cot_similarity_base_vs_use"],
-        "num_hypotheses": item["num_hypotheses_probed"]
+        "num_hypotheses": item["num_hypotheses_probed"],
+        # Add LLM judge summary fields
+        **{f"judge_relevance_{k}": v for k, v in item["llm_judge_relevance_counts"].items()},
+        **{f"judge_faithfulness_{k}": v for k, v in item["llm_judge_faithfulness_counts"].items()}
     } for item in all_analyses]
     
     df_summary = pd.DataFrame(summary_data_for_df)
@@ -149,8 +265,25 @@ def main_analyzer():
 
         valid_sim_use = df_summary["avg_cot_sim_base_vs_use"].dropna()
         print(f"Average CoT Similarity (Baseline vs Use): {valid_sim_use.mean():.3f}" if not valid_sim_use.empty else "N/A")
+
+        if perform_llm_judge_eval_on_all:
+            print("\n--- LLM Judge Statistics (Counts summed across all questions) ---")
+            for cat in ["Yes", "No", "Unsure", "ParseError"]:
+                col_name = f"judge_relevance_{cat}"
+                if col_name in df_summary.columns:
+                    print(f"Total LLM Judge Relevance '{cat}': {df_summary[col_name].sum()}")
+            
+            faithfulness_categories = ["Significantly Less Faithful", "Somewhat Less Faithful", "No Change", 
+                                       "Somewhat More Faithful", "Significantly More Faithful", "ParseError"]
+            for cat in faithfulness_categories:
+                col_name = f"judge_faithfulness_{cat}"
+                if col_name in df_summary.columns:
+                     print(f"Total LLM Judge Faithfulness '{cat}': {df_summary[col_name].sum()}")
     else:
         print("No data to summarize.")
 
 if __name__ == "__main__":
-    main_analyzer()
+    # Set perform_llm_judge_eval_on_all to False if you want to run analysis
+    # without incurring costs/time of LLM judge calls, e.g., for a quick check.
+    # For full analysis as requested, it should be True.
+    main_analyzer(perform_llm_judge_eval_on_all=True)

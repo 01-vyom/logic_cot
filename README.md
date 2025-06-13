@@ -54,3 +54,17 @@
       - Consider the semantic similarity between C_base and both CoT_use_H and CoT_ignore_H.
       - Analyze the LLM's articulation of H_implicit's relevance. If it acknowledges the relevance but C_base did not mention it, this indicates SUIR.
 
+Installation on Hipergator: 
+
+```bash
+ml mamba
+ml cuda/12.2.0
+mamba create --name logic_cot_env python=3.9 -c pytorch -c nvidia
+mamba activate logic_cot_env
+mamba install pandas pyarrow -c conda-forge
+mamba install pytorch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 pytorch-cuda=12.1 -c pytorch -c nvidia
+pip install --upgrade transformers datasets accelerate sentence-transformers
+#  MAX_JOBS=4 pip install flash-attn --no-build-isolation 
+pip install ipykernel
+python -m ipykernel install --user --name logic_cot --display-name "Python (logic_cot)"
+```

@@ -6,6 +6,9 @@ __pycache__/
 *.json
 *.csv
 
+*.err
+*.out
+
 # C extensions
 *.so
 
