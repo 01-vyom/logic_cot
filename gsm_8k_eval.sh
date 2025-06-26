@@ -12,7 +12,7 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --mem=100gb
-#SBATCH --time=100:00:00
+#SBATCH --time=200:00:00
 
 echo "Date      = $(date)"
 echo "host      = $(hostname -s)"
@@ -24,6 +24,8 @@ ml mamba
 mamba activate logic_cot_env
 
 export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=4
+export MKL_NUM_THREADS=4
 
 T1=$(date +%s)
 python3 run_experiment.py

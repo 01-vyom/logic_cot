@@ -3,148 +3,245 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import json
 import re
 import warnings
+from functools import lru_cache
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 # DEFAULT_MODEL_HF = 'Qwen/Qwen3-4B' # Default Hugging Face model (e.g., 'gpt2', 'mistralai/Mistral-7B-v0.1')
 DEFAULT_MODEL_HF = 'Qwen/Qwen3-32B' # Default Hugging Face model (e.g., 'gpt2', 'mistralai/Mistral-7B-v0.1')
 
-# Global cache for models and tokenizers to avoid reloading them repeatedly
+# Global cache for models and tokenizers
 model_cache = {}
 tokenizer_cache = {}
+compiled_model_cache = {}
 
-def get_hf_response(prompt_text, model_name=DEFAULT_MODEL_HF, temperature=0.0, max_new_tokens=32768, format_type=None):
+# Cache for processed chat templates and tokenized inputs
+@lru_cache(maxsize=1000)
+def get_chat_template(model_name: str, prompt_text: str, enable_thinking: bool = False):
+    """Cache chat template processing to avoid repeated computation."""
+    if model_name not in tokenizer_cache:
+        return None
+
+    tokenizer = tokenizer_cache[model_name]
+    try:
+        messages = [{"role": "user", "content": prompt_text}]
+        kwargs = {
+            "tokenize": False,
+            "add_generation_prompt": True,
+        }
+
+        if enable_thinking and "qwen" in model_name.lower():
+            try:
+                kwargs["enable_thinking"] = True
+            except TypeError:
+                pass
+
+        return tokenizer.apply_chat_template(messages, **kwargs)
+    except Exception:
+        return None
+
+def load_model_optimized(model_name: str):
+    """Load model with optimized settings."""
+    if model_name in model_cache:
+        return model_cache[model_name]
+
+    print(f"Loading model: {model_name}...")
+
+    # Use more aggressive optimization flags
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        cache_dir="/orange/daisyw/v.pathak/hf_cache",
+        # Additional optimizations
+        use_cache=True,  # Enable KV cache
+        low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
+        trust_remote_code=True,  # Allow custom model code
+        # attn_implementation="flash_attention_2",  # Uncomment if available
+    )
+
+    model.eval()
+
+    # Enable memory efficient attention if available
+    if hasattr(model, 'gradient_checkpointing_disable'):
+        model.gradient_checkpointing_disable()
+
+    model_cache[model_name] = model
+    return model
+
+def get_compiled_model(model_name: str):
+    """Get compiled model with caching."""
+    if model_name not in compiled_model_cache:
+        model = load_model_optimized(model_name)
+        # Compile with mode='reduce-overhead' for better performance on repeated calls
+        compiled_model_cache[model_name] = torch.compile(
+            model,
+            mode='reduce-overhead',
+            fullgraph=True,
+            dynamic=False
+        )
+    return compiled_model_cache[model_name]
+
+def load_tokenizer_optimized(model_name: str):
+    """Load tokenizer with optimized settings."""
+    if model_name in tokenizer_cache:
+        return tokenizer_cache[model_name]
+
+    print(f"Loading tokenizer: {model_name}...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name,
+        cache_dir="/orange/daisyw/v.pathak/hf_cache",
+        use_fast=True,  # Use fast tokenizer implementation
+        trust_remote_code=True
+    )
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    tokenizer_cache[model_name] = tokenizer
+    return tokenizer
+
+def decode_qwen_response(tokenizer, generated_token_ids: list, model_name: str) -> str:
+    """Optimized Qwen response decoding."""
+    if "qwen" not in model_name.lower():
+        return tokenizer.decode(generated_token_ids, skip_special_tokens=True).strip()
+
+    think_tag_end_token_id = 151668
+    try:
+        # Use list comprehension and reverse search for better performance
+        reversed_ids = generated_token_ids[::-1]
+        last_think_end_idx = len(generated_token_ids) - 1 - reversed_ids.index(think_tag_end_token_id)
+        content_token_ids = generated_token_ids[last_think_end_idx + 1:]
+        return tokenizer.decode(content_token_ids, skip_special_tokens=True).strip()
+    except ValueError:
+        return tokenizer.decode(generated_token_ids, skip_special_tokens=True).strip()
+
+def parse_json_response(text: str) -> dict:
+    """Optimized JSON parsing with multiple fallback strategies."""
+    # First try direct parsing
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try markdown code block extraction
+    json_match = re.search(r'```json\s*([\s\S]*?)\s*```', text, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Try finding JSON object boundaries
+    json_start = text.find('{')
+    json_end = text.rfind('}')
+    if json_start != -1 and json_end != -1 and json_start < json_end:
+        try:
+            return json.loads(text[json_start:json_end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    return {"error": "JSON decode error", "raw_response": text}
+
+def get_hf_response(prompt_text, model_name=DEFAULT_MODEL_HF, temperature=0.0,
+                   max_new_tokens=32768, format_type=None, use_compilation=True):
     """
-    Sends a prompt to a Hugging Face model and returns the response.
+    Optimized Hugging Face model inference with multiple performance improvements.
+
     Args:
         prompt_text (str): The prompt to send to the model.
         model_name (str): The Hugging Face model identifier.
-        temperature (float): The temperature for generation. 0.0 means greedy.
+        temperature (float): The temperature for generation.
         max_new_tokens (int): Maximum number of new tokens to generate.
         format_type (str, optional): 'json' if the output is expected to be JSON.
+        use_compilation (bool): Whether to use torch.compile for optimization.
 
     Returns:
         str or dict: The model's response, or a dict if format_type is 'json'.
     """
     try:
-        # device = "cuda" if torch.cuda.is_available() else "cpu" # device_map="auto" handles this
+        # Load model and tokenizer
+        if use_compilation:
+            model = get_compiled_model(model_name)
+        else:
+            model = load_model_optimized(model_name)
 
-        if model_name not in model_cache:
-            # print(f"Loading model: {model_name} to {device}...")
-            model_cache[model_name] = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                # attn_implementation="flash_attention_2",
-                torch_dtype="auto",  # Automatically select appropriate dtype
-                device_map="auto",    # Automatically distribute model across available devices (GPUs/CPU)
-                cache_dir="/orange/daisyw/v.pathak/hf_cache"
-            )
-        model = model_cache[model_name].eval()
-        model = torch.compile(model)
+        tokenizer = load_tokenizer_optimized(model_name)
+        device = next(model.parameters()).device
 
-        if model_name not in tokenizer_cache:
-            print(f"Loading tokenizer: {model_name}...")
-            tokenizer_cache[model_name] = AutoTokenizer.from_pretrained(model_name,cache_dir="/orange/daisyw/v.pathak/hf_cache")
-        tokenizer = tokenizer_cache[model_name]
-        
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
+        # Use cached chat template processing
+        final_prompt = get_chat_template(
+            model_name,
+            prompt_text,
+            enable_thinking="qwen" in model_name.lower()
+        )
 
-        # Determine input device based on model's placement by device_map
-        input_device = next(model.parameters()).device
+        if final_prompt is None:
+            final_prompt = prompt_text
+            print(f"Warning: Using direct prompt for {model_name}")
 
-        # Prepare prompt using chat template if available
-        final_prompt_text_for_model = prompt_text
-        try:
-            messages_for_template = [{"role": "user", "content": prompt_text}]
-            final_prompt_text_for_model = tokenizer.apply_chat_template(
-                messages_for_template,
-                tokenize=False,
-                add_generation_prompt=True,
-                # enable_thinking=True # Qwen specific, might need conditional logic or try-except
-            )
-            # More robust way to add Qwen-specific args if tokenizer supports them
-            if "qwen" in model_name.lower():
-                try:
-                    final_prompt_text_for_model = tokenizer.apply_chat_template(
-                        messages_for_template,
-                        tokenize=False,
-                        add_generation_prompt=True,
-                        enable_thinking=True
-                    )
-                    # print(f"Info: Applied chat template with enable_thinking=True for {model_name}.")
-                except TypeError: # If enable_thinking is not a valid kwarg for this tokenizer
-                    # print(f"Info: Applied chat template (without enable_thinking) for {model_name}.")
-                    pass
-            else:
-                 print(f"Info: Applied chat template for {model_name}.")
+        # Optimize tokenization
+        max_length = getattr(tokenizer, 'model_max_length', 2048)
+        inputs = tokenizer(
+            final_prompt,
+            return_tensors="pt",
+            padding=False,  # Don't pad single inputs
+            truncation=True,
+            max_length=max_length
+        ).to(device, non_blocking=True)
 
-        except Exception as e_template:
-            # Fallback if chat template application fails (e.g., model is not chat-tuned or tokenizer doesn't support it)
-            print(f"Warning: Could not apply chat template for {model_name} (falling back to direct prompt): {e_template}")
-            # final_prompt_text_for_model remains prompt_text
+        # Optimized generation parameters
+        gen_kwargs = {
+            "max_new_tokens": max_new_tokens,
+            "pad_token_id": tokenizer.pad_token_id,
+            "use_cache": True,  # Enable KV cache
+            "do_sample": temperature > 0.0,
+        }
 
-        inputs = tokenizer([final_prompt_text_for_model], return_tensors="pt", padding=True, truncation=True, max_length=tokenizer.model_max_length if hasattr(tokenizer, 'model_max_length') else 2048).to(input_device)
-
-        gen_kwargs = {"max_new_tokens": max_new_tokens, "pad_token_id": tokenizer.pad_token_id}
         if temperature > 0.0:
-            gen_kwargs["temperature"] = temperature
-            gen_kwargs["do_sample"] = True
-        with torch.no_grad():
+            gen_kwargs.update({
+                "temperature": temperature,
+                "top_p": 0.9,  # Add nucleus sampling for better quality
+            })
+
+        # Use torch.inference_mode for better performance
+        with torch.inference_mode():
             output_sequences = model.generate(**inputs, **gen_kwargs)
 
-        # Extract only the newly generated token IDs
+        # Extract and decode generated tokens
         generated_token_ids = output_sequences[0][inputs.input_ids.shape[-1]:].tolist()
+        processed_text = decode_qwen_response(tokenizer, generated_token_ids, model_name)
 
-        # Qwen-specific token ID for </think> is 151668
-        # This is a more robust way to handle thinking blocks for Qwen models
-        processed_text = ""
-        if "qwen" in model_name.lower():
-            think_tag_end_token_id = 151668 
-            try:
-                # Find the last occurrence of the </think> token ID
-                last_think_end_idx_in_generated = len(generated_token_ids) - 1 - generated_token_ids[::-1].index(think_tag_end_token_id)
-                # Decode content after the last </think> token
-                content_token_ids = generated_token_ids[last_think_end_idx_in_generated + 1:]
-                processed_text = tokenizer.decode(content_token_ids, skip_special_tokens=True).strip()
-                
-                # Optional: decode and print thinking content for debugging
-                # thinking_token_ids = generated_token_ids[:last_think_end_idx_in_generated + 1]
-                # thinking_content_decoded = tokenizer.decode(thinking_token_ids, skip_special_tokens=True).strip()
-                # print(f"Info: Decoded thinking content: '{thinking_content_decoded[:200]}...'")
-                # print(f"Info: Extracted content after last </think> token_id. Preview: '{processed_text[:100]}...'")
-            except ValueError: # If </think> token is not found
-                processed_text = tokenizer.decode(generated_token_ids, skip_special_tokens=True).strip()
-        else: # For non-Qwen models, decode all generated tokens
-            processed_text = tokenizer.decode(generated_token_ids, skip_special_tokens=True).strip()
-
+        # Handle JSON formatting
         if format_type == 'json':
-            try:
-                return json.loads(processed_text)
-            except json.JSONDecodeError:
-                print(f"Warning: Could not decode JSON directly from processed model response: '{processed_text[:200]}...'")
-                match = re.search(r'```json\s*([\s\S]*?)\s*```', processed_text, re.DOTALL)
-                if match:
-                    try:
-                        return json.loads(match.group(1))
-                    except json.JSONDecodeError:
-                        print(f"Warning: Could not decode extracted JSON: {match.group(1)}")
-                        return {"error": "JSON decode error from extracted markdown", "raw_response": processed_text}
-                # If no markdown, try to find the first '{' and last '}' as a last resort
-                try:
-                    json_start_index = processed_text.find('{')
-                    json_end_index = processed_text.rfind('}')
-                    if json_start_index != -1 and json_end_index != -1 and json_start_index < json_end_index:
-                        potential_json_str = processed_text[json_start_index : json_end_index+1]
-                        parsed_json = json.loads(potential_json_str)
-                        # print(f"Info: Successfully parsed JSON by finding {{...}} block from: '{potential_json_str[:100]}...'")
-                        return parsed_json
-                except json.JSONDecodeError:
-                    pass # Fall through to return error
-                return {"error": "JSON decode error, no clear JSON block or markdown", "raw_response": processed_text}
-        else:
-            return processed_text # Return the processed text (potentially without <think> block)
+            return parse_json_response(processed_text)
+
+        return processed_text
+
     except Exception as e:
-        print(f"Error communicating with Hugging Face model: {e}")
+        print(f"Error in model inference: {e}")
         if format_type == 'json':
             return {"error": str(e)}
         return f"Error: {e}"
+
+# Utility function to warm up the model (optional but recommended)
+def warmup_model(model_name=DEFAULT_MODEL_HF, warmup_prompt="Hello, world!"):
+    """
+    Warm up the model with a simple prompt to optimize subsequent calls.
+    This helps with torch.compile optimization and GPU memory allocation.
+    """
+    print(f"Warming up model: {model_name}")
+    get_hf_response(warmup_prompt, model_name, max_new_tokens=10)
+    print("Model warmup complete")
+
+# Memory cleanup utility
+def clear_model_cache():
+    """Clear model cache to free up memory."""
+    global model_cache, tokenizer_cache, compiled_model_cache
+    model_cache.clear()
+    tokenizer_cache.clear()
+    compiled_model_cache.clear()
+    get_chat_template.cache_clear()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    print("Model cache cleared")
