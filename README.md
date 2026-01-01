@@ -54,6 +54,11 @@
       - Consider the semantic similarity between C_base and both CoT_use_H and CoT_ignore_H.
       - Analyze the LLM's articulation of H_implicit's relevance. If it acknowledges the relevance but C_base did not mention it, this indicates SUIR.
 
+5. **Report**
+
+   [Report](https://docs.google.com/document/d/11slXsU6zePR99AJp8ARvFP4Dv61v_bAjTvYNxcfPdh4/edit?usp=sharing)
+
+
 Steps to Implement:
 
 ```bash
