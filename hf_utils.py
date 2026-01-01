@@ -52,7 +52,7 @@ def load_model_optimized(model_name: str):
         model_name,
         torch_dtype=torch.bfloat16,
         device_map="auto",
-        cache_dir="/orange/daisyw/v.pathak/hf_cache",
+        cache_dir="/home/ec2-user/code/personal/hf_cache",
         # Additional optimizations
         use_cache=True,  # Enable KV cache
         low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
@@ -90,7 +90,7 @@ def load_tokenizer_optimized(model_name: str):
     print(f"Loading tokenizer: {model_name}...")
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
-        cache_dir="/orange/daisyw/v.pathak/hf_cache",
+        cache_dir="/home/ec2-user/code/personal/hf_cache",
         use_fast=True,  # Use fast tokenizer implementation
         trust_remote_code=True
     )

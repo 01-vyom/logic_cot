@@ -12,10 +12,11 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 from hf_utils import get_hf_response, DEFAULT_MODEL_HF # Assuming DEFAULT_MODEL_HF can be a powerful one
 from irac_prompts import HUMAN_EVAL_IMPLICIT_FACTOR_RELEVANCE, HUMAN_EVAL_FAITHFULNESS_CHANGE
 
-RESULTS_DIR = "/orange/daisyw/v.pathak/logic_cot/experiment_results"
+RESULTS_DIR = "/home/ec2-user/code/personal/logic_cot/experiment_results"
 ALL_RESULTS_CSV = os.path.join(RESULTS_DIR, "all_experiment_results.csv") # Path to the CSV from run_experiment.py
 SUMMARY_FILE_JSON = os.path.join(RESULTS_DIR, "irac_analysis_summary.json")
 SUMMARY_FILE_CSV = os.path.join(RESULTS_DIR, "irac_analysis_summary.csv")
+DETAILED_PROBE_CSV = os.path.join(RESULTS_DIR, "irac_detailed_probe_analysis.csv")
 
 # --- LLM Judge Configuration ---
 # Use a potentially larger/more capable model for judging
@@ -30,6 +31,7 @@ def print_analyze_results_config():
     print(f"ALL_RESULTS_CSV: {ALL_RESULTS_CSV}")
     print(f"SUMMARY_FILE_JSON: {SUMMARY_FILE_JSON}")
     print(f"SUMMARY_FILE_CSV: {SUMMARY_FILE_CSV}")
+    print(f"DETAILED_PROBE_CSV: {DETAILED_PROBE_CSV}")
     print(f"LLM_JUDGE_MODEL_NAME: {LLM_JUDGE_MODEL_NAME}")
     print(f"LLM_JUDGE_TEMPERATURE: {LLM_JUDGE_TEMPERATURE}")
     print(f"LLM_JUDGE_MAX_NEW_TOKENS: {LLM_JUDGE_MAX_NEW_TOKENS}")
@@ -132,7 +134,8 @@ def analyze_single_experiment_log(log_data, perform_llm_judge_eval=True):
             "Significantly Less Faithful": 0, "Somewhat Less Faithful": 0, "No Change": 0,
             "Somewhat More Faithful": 0, "Significantly More Faithful": 0, "ParseError": 0
         },
-        "probes_analysis": []
+        "probes_analysis": [],
+        "detailed_probe_data": []  # New field for detailed CSV export
     }
     
     baseline_cot = log_data.get("baseline_cot", "")
@@ -184,6 +187,35 @@ def analyze_single_experiment_log(log_data, perform_llm_judge_eval=True):
             "similarity_base_cot_vs_use_cot": sim_base_use,
         }
 
+        # Create detailed probe data row for CSV export
+        detailed_probe_item = {
+            # Question-level context (repeated for each probe)
+            "question_id": log_data["question_id"],
+            "question_text": log_data["question_text"],
+            "baseline_answer": baseline_answer,
+            "baseline_cot": baseline_cot,
+            
+            # Original probe data from experiment
+            "hypothesis": hypothesis,
+            "answer_use": a_use,
+            "answer_ignore": a_ignore,
+            "cot_use": cot_use,
+            "cot_ignore": cot_ignore,
+            "articulation_use": articulation_use,
+            "articulation_ignore": articulation_ignore,
+            "raw_use_output": probe.get("raw_use_output", ""),
+            "raw_ignore_output": probe.get("raw_ignore_output", ""),
+            
+            # Analysis results
+            "baseline_answer_matches_use_answer": baseline_answer == a_use,
+            "baseline_answer_differs_from_ignore_answer": baseline_answer != a_ignore,
+            "suir_detected_this_probe": suir_detected_for_probe,
+            "articulation_use_contains_relevant": "relevant" in articulation_use.lower(),
+            "articulation_ignore_contains_relevant": "relevant" in articulation_ignore.lower(),
+            "similarity_base_cot_vs_ignore_cot": sim_base_ignore,
+            "similarity_base_cot_vs_use_cot": sim_base_use,
+        }
+
         if perform_llm_judge_eval:
             judge_relevance, raw_judge_relevance, judge_faithfulness, raw_judge_faithfulness = get_llm_judge_responses(
                 log_data["question_text"], baseline_cot, baseline_answer, hypothesis,
@@ -194,10 +226,23 @@ def analyze_single_experiment_log(log_data, perform_llm_judge_eval=True):
             probe_analysis_item["llm_judge_faithfulness"] = judge_faithfulness
             probe_analysis_item["raw_llm_judge_faithfulness_output"] = raw_judge_faithfulness
             
+            # Add LLM judge results to detailed probe item
+            detailed_probe_item["llm_judge_relevance"] = judge_relevance
+            detailed_probe_item["raw_llm_judge_relevance_output"] = raw_judge_relevance
+            detailed_probe_item["llm_judge_faithfulness"] = judge_faithfulness
+            detailed_probe_item["raw_llm_judge_faithfulness_output"] = raw_judge_faithfulness
+            
             analysis["llm_judge_relevance_counts"][judge_relevance if judge_relevance in analysis["llm_judge_relevance_counts"] else "ParseError"] += 1
             analysis["llm_judge_faithfulness_counts"][judge_faithfulness if judge_faithfulness in analysis["llm_judge_faithfulness_counts"] else "ParseError"] += 1
+        else:
+            # Add empty LLM judge fields when not evaluated
+            detailed_probe_item["llm_judge_relevance"] = ""
+            detailed_probe_item["raw_llm_judge_relevance_output"] = ""
+            detailed_probe_item["llm_judge_faithfulness"] = ""
+            detailed_probe_item["raw_llm_judge_faithfulness_output"] = ""
 
         analysis["probes_analysis"].append(probe_analysis_item)
+        analysis["detailed_probe_data"].append(detailed_probe_item)
 
     if cot_similarities_base_vs_ignore:
         analysis["avg_cot_similarity_base_vs_ignore"] = np.mean(cot_similarities_base_vs_ignore)
@@ -233,10 +278,26 @@ def main_analyzer(perform_llm_judge_eval_on_all=True): # Control if LLM judge is
     if not all_analyses:
         print("No experiment logs found to analyze.")
         return
+    
+    # Save detailed JSON analysis
     with open(SUMMARY_FILE_JSON, 'w') as f:
         json.dump(all_analyses, f, indent=4)
     print(f"\nDetailed analysis saved to {SUMMARY_FILE_JSON}")
 
+    # Create and save detailed probe-level CSV
+    detailed_probe_data = []
+    for analysis_item in all_analyses:
+        detailed_probe_data.extend(analysis_item["detailed_probe_data"])
+    
+    if detailed_probe_data:
+        df_detailed = pd.DataFrame(detailed_probe_data)
+        df_detailed.to_csv(DETAILED_PROBE_CSV, index=False)
+        print(f"Detailed probe-level analysis saved to {DETAILED_PROBE_CSV}")
+        print(f"  - Total probe rows: {len(detailed_probe_data)}")
+    else:
+        print("No probe data found for detailed CSV export.")
+
+    # Create and save question-level summary CSV
     summary_data_for_df = [{
         "question_id": item["question_id"],
         "suir_detection_rate": (item["suir_detections"] / item["num_hypotheses_probed"]) if item["num_hypotheses_probed"] > 0 else 0,
@@ -251,7 +312,7 @@ def main_analyzer(perform_llm_judge_eval_on_all=True): # Control if LLM judge is
     
     df_summary = pd.DataFrame(summary_data_for_df)
     df_summary.to_csv(SUMMARY_FILE_CSV, index=False)
-    print(f"Tabular summary saved to {SUMMARY_FILE_CSV}")
+    print(f"Question-level summary saved to {SUMMARY_FILE_CSV}")
 
     print("\n--- Overall Summary Statistics ---")
     if not df_summary.empty:

@@ -63,8 +63,13 @@ mamba create --name logic_cot_env python=3.9 -c pytorch -c nvidia
 mamba activate logic_cot_env
 mamba install pandas pyarrow -c conda-forge
 mamba install pytorch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 pytorch-cuda=12.1 -c pytorch -c nvidia
-pip install --upgrade transformers datasets accelerate sentence-transformers
+pip install --upgrade transformers datasets accelerate sentence-transformers matplotlib seaborn
 #  MAX_JOBS=4 pip install flash-attn --no-build-isolation 
 pip install ipykernel
 python -m ipykernel install --user --name logic_cot --display-name "Python (logic_cot)"
+
+python3 run_experiment.py > logic_cot.out 2>&1
+python3 analyze_results.py > logic_cot_answer.out 2>&1
+python3 create_plots.py
+python3 generate_report.py
 ```

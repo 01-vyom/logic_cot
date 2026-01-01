@@ -16,7 +16,7 @@ TEMPERATURE_HYPOTHESIS_GEN = 0.0 # Higher for more diverse hypotheses
 TEMPERATURE_PROBE = 0.0
 MAX_NEW_TOKENS = 10_000
 NUM_HYPOTHESES_TO_PROBE_PER_QUESTION = 3 # How many of the generated hypotheses to test
-OUTPUT_DIR = "/orange/daisyw/v.pathak/logic_cot/experiment_results"
+OUTPUT_DIR = "/home/ec2-user/code/personal/logic_cot/experiment_results"
 DATASET_NAME = "gsm8k"
 DATASET_CONFIG = "main"
 DATASET_SPLIT = "test" # or "train"
@@ -44,7 +44,7 @@ def print_run_experiment_config():
 def load_questions_from_hf(dataset_name, config_name, split_name, max_questions=None):
     """Loads questions from a Hugging Face dataset."""
     print(f"Loading dataset {dataset_name} ({config_name}) split {split_name} from Hugging Face...")
-    dataset = load_dataset(dataset_name, config_name, split=split_name, cache_dir="/orange/daisyw/v.pathak/hf_cache")
+    dataset = load_dataset(dataset_name, config_name, split=split_name, cache_dir="/home/ec2-user/code/personal/hf_cache")
     questions_to_process = []
     
     count = 0
