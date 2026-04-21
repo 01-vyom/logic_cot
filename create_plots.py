@@ -8,11 +8,17 @@ import warnings
 from collections import Counter
 import re
 from datetime import datetime
+import sys
 
 warnings.filterwarnings("ignore")
 
 # --- Configuration ---
-RESULTS_DIR = "/home/ec2-user/code/personal/logic_cot/experiment_results"
+# Get results directory from command line argument or use default
+if len(sys.argv) > 1:
+    RESULTS_DIR = sys.argv[1]
+else:
+    RESULTS_DIR = "/home/ec2-user/code/personal/logic_cot/experiment_results"  # Default for backward compatibility
+
 PLOTS_DIR = os.path.join(RESULTS_DIR, "plots")
 SUMMARY_CSV = os.path.join(RESULTS_DIR, "irac_analysis_summary.csv")
 DETAILED_CSV = os.path.join(RESULTS_DIR, "irac_detailed_probe_analysis.csv")
@@ -531,6 +537,145 @@ def create_question_performance_overview(df_summary, save_path):
     plt.close()
     print(f"Saved question performance overview to {save_path}")
 
+def create_category_analysis(df_summary, save_path):
+    """Create plots showing TruthfulQA category-level analysis."""
+    # Filter for TruthfulQA data only
+    if 'category' not in df_summary.columns or df_summary['category'].isna().all():
+        print("Skipping category analysis - no category data available")
+        return
+    
+    truthfulqa_data = df_summary[df_summary['category'] != 'N/A'].copy()
+    if truthfulqa_data.empty:
+        print("Skipping category analysis - no TruthfulQA data")
+        return
+    
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    fig.suptitle('TruthfulQA Category-Level Analysis', fontsize=TITLE_SIZE + 4, y=0.98)
+    
+    # 1. SUIR rate by category (top 10)
+    category_suir = truthfulqa_data.groupby('category')['suir_detection_rate'].agg(['mean', 'count']).reset_index()
+    category_suir = category_suir.sort_values('mean', ascending=False).head(10)
+    
+    if not category_suir.empty:
+        bars = axes[0, 0].barh(range(len(category_suir)), category_suir['mean'], color='skyblue', alpha=0.7)
+        axes[0, 0].set_yticks(range(len(category_suir)))
+        axes[0, 0].set_yticklabels(category_suir['category'], fontsize=9)
+        axes[0, 0].set_xlabel('Mean SUIR Detection Rate')
+        axes[0, 0].set_title('Top 10 Categories by SUIR Detection')
+        axes[0, 0].invert_yaxis()
+        
+        # Add count labels
+        for i, (idx, row) in enumerate(category_suir.iterrows()):
+            axes[0, 0].text(row['mean'] + 0.01, i, f"n={int(row['count'])}", 
+                           va='center', fontsize=8)
+    
+    # 2. Sample size by category (top 10)
+    category_counts = truthfulqa_data['category'].value_counts().head(10)
+    if not category_counts.empty:
+        axes[0, 1].bar(range(len(category_counts)), category_counts.values, color='lightcoral', alpha=0.7)
+        axes[0, 1].set_xticks(range(len(category_counts)))
+        axes[0, 1].set_xticklabels(category_counts.index, rotation=45, ha='right', fontsize=8)
+        axes[0, 1].set_ylabel('Number of Questions')
+        axes[0, 1].set_title('Sample Size by Category (Top 10)')
+    
+    # 3. Box plot of SUIR rates across categories
+    if len(truthfulqa_data['category'].unique()) > 1:
+        # Get top 8 categories by sample size for readability
+        top_categories = truthfulqa_data['category'].value_counts().head(8).index
+        plot_data = truthfulqa_data[truthfulqa_data['category'].isin(top_categories)]
+        
+        if not plot_data.empty:
+            plot_data_sorted = plot_data.sort_values('category')
+            sns.boxplot(data=plot_data_sorted, x='category', y='suir_detection_rate', ax=axes[1, 0])
+            axes[1, 0].set_xticklabels(axes[1, 0].get_xticklabels(), rotation=45, ha='right', fontsize=8)
+            axes[1, 0].set_ylabel('SUIR Detection Rate')
+            axes[1, 0].set_xlabel('Category')
+            axes[1, 0].set_title('SUIR Distribution by Category (Top 8)')
+    
+    # 4. Answer flip rate by category (top 10)
+    category_flip = truthfulqa_data.groupby('category')['answer_flip_rate_when_ignoring'].mean().sort_values(ascending=False).head(10)
+    if not category_flip.empty:
+        bars = axes[1, 1].barh(range(len(category_flip)), category_flip.values, color='orange', alpha=0.7)
+        axes[1, 1].set_yticks(range(len(category_flip)))
+        axes[1, 1].set_yticklabels(category_flip.index, fontsize=9)
+        axes[1, 1].set_xlabel('Mean Answer Flip Rate')
+        axes[1, 1].set_title('Top 10 Categories by Answer Flip Rate')
+        axes[1, 1].invert_yaxis()
+    
+    # Adjust layout
+    plt.subplots_adjust(hspace=0.4, wspace=0.3)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(save_path, dpi=DPI, bbox_inches='tight')
+    plt.close()
+    print(f"Saved category analysis to {save_path}")
+
+def create_type_comparison(df_summary, save_path):
+    """Create plots comparing Adversarial vs Non-Adversarial questions."""
+    # Filter for TruthfulQA data only
+    if 'type' not in df_summary.columns or df_summary['type'].isna().all():
+        print("Skipping type comparison - no type data available")
+        return
+    
+    truthfulqa_data = df_summary[df_summary['type'] != 'N/A'].copy()
+    if truthfulqa_data.empty or len(truthfulqa_data['type'].unique()) < 2:
+        print("Skipping type comparison - insufficient type variety")
+        return
+    
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    fig.suptitle('Adversarial vs Non-Adversarial Comparison', fontsize=TITLE_SIZE + 4, y=0.98)
+    
+    # 1. SUIR detection rate comparison
+    type_suir = truthfulqa_data.groupby('type')['suir_detection_rate'].agg(['mean', 'std', 'count']).reset_index()
+    if not type_suir.empty:
+        bars = axes[0, 0].bar(type_suir['type'], type_suir['mean'], 
+                             yerr=type_suir['std'], capsize=5, color=['lightblue', 'lightcoral'], alpha=0.7)
+        axes[0, 0].set_ylabel('Mean SUIR Detection Rate')
+        axes[0, 0].set_title('SUIR Detection by Question Type')
+        axes[0, 0].set_xlabel('Question Type')
+        
+        # Add count labels
+        for i, row in type_suir.iterrows():
+            axes[0, 0].text(i, row['mean'] + row['std'] + 0.02, f"n={int(row['count'])}", 
+                           ha='center', fontsize=9)
+    
+    # 2. Answer flip rate comparison
+    type_flip = truthfulqa_data.groupby('type')['answer_flip_rate_when_ignoring'].agg(['mean', 'std']).reset_index()
+    if not type_flip.empty:
+        axes[0, 1].bar(type_flip['type'], type_flip['mean'], 
+                      yerr=type_flip['std'], capsize=5, color=['lightgreen', 'lightyellow'], alpha=0.7)
+        axes[0, 1].set_ylabel('Mean Answer Flip Rate')
+        axes[0, 1].set_title('Answer Flip Rate by Question Type')
+        axes[0, 1].set_xlabel('Question Type')
+    
+    # 3. Box plot comparison - SUIR rates
+    sns.boxplot(data=truthfulqa_data, x='type', y='suir_detection_rate', ax=axes[1, 0])
+    axes[1, 0].set_ylabel('SUIR Detection Rate')
+    axes[1, 0].set_xlabel('Question Type')
+    axes[1, 0].set_title('SUIR Detection Distribution by Type')
+    
+    # 4. Sample sizes and statistics
+    stats_text = []
+    for q_type in truthfulqa_data['type'].unique():
+        type_data = truthfulqa_data[truthfulqa_data['type'] == q_type]
+        stats_text.append(f"{q_type}:")
+        stats_text.append(f"  N = {len(type_data)}")
+        stats_text.append(f"  SUIR Rate: {type_data['suir_detection_rate'].mean():.3f}")
+        stats_text.append(f"  Flip Rate: {type_data['answer_flip_rate_when_ignoring'].mean():.3f}")
+        stats_text.append(f"  Similarity: {type_data['avg_cot_sim_base_vs_ignore'].mean():.3f}")
+        stats_text.append("")
+    
+    axes[1, 1].text(0.1, 0.9, '\n'.join(stats_text), transform=axes[1, 1].transAxes,
+                   fontfamily='monospace', fontsize=10, verticalalignment='top')
+    axes[1, 1].set_title('Summary Statistics by Type')
+    axes[1, 1].axis('off')
+    
+    # Adjust layout
+    plt.subplots_adjust(hspace=0.35, wspace=0.25)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(save_path, dpi=DPI, bbox_inches='tight')
+    plt.close()
+    print(f"Saved type comparison to {save_path}")
+
 def create_combined_pdf_report(df_summary, df_detailed):
     """Create a combined PDF report with all visualizations."""
     pdf_path = os.path.join(PLOTS_DIR, "irac_analysis_report.pdf")
@@ -660,6 +805,20 @@ def main():
         hypo_path = os.path.join(PLOTS_DIR, "05_hypothesis_effectiveness_analysis.png")
         create_hypothesis_effectiveness_analysis(df_detailed, hypo_path)
         plots_created.append(hypo_path)
+    
+    # TruthfulQA-specific plots (if applicable)
+    if not df_summary.empty and 'category' in df_summary.columns:
+        # Category Analysis
+        category_path = os.path.join(PLOTS_DIR, "07_category_analysis.png")
+        create_category_analysis(df_summary, category_path)
+        if os.path.exists(category_path):
+            plots_created.append(category_path)
+        
+        # Type Comparison
+        type_path = os.path.join(PLOTS_DIR, "08_type_comparison.png")
+        create_type_comparison(df_summary, type_path)
+        if os.path.exists(type_path):
+            plots_created.append(type_path)
     
     # Create combined PDF report
     if plots_created:

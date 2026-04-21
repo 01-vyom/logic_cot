@@ -3,9 +3,15 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import json
+import sys
 
 # --- Configuration ---
-RESULTS_DIR = "/home/ec2-user/code/personal/logic_cot/experiment_results"
+# Get results directory from command line argument or use default
+if len(sys.argv) > 1:
+    RESULTS_DIR = sys.argv[1]
+else:
+    RESULTS_DIR = "/home/ec2-user/code/personal/logic_cot/experiment_results"  # Default for backward compatibility
+
 PLOTS_DIR = os.path.join(RESULTS_DIR, "plots")
 SUMMARY_CSV = os.path.join(RESULTS_DIR, "irac_analysis_summary.csv")
 DETAILED_CSV = os.path.join(RESULTS_DIR, "irac_detailed_probe_analysis.csv")
@@ -405,10 +411,9 @@ def generate_hypothesis_section(df_detailed):
         md.append("*Figure 5: Hypothesis Effectiveness - Length vs detection, answer matching patterns, similarity by SUIR status, and word frequency*\n\n")
     
     md.append("### Answer Matching Patterns\n\n")
-    
+    total = len(df_detailed)
     if 'baseline_answer_matches_use_answer' in df_detailed.columns:
         match_use = df_detailed['baseline_answer_matches_use_answer'].sum()
-        total = len(df_detailed)
         
         md.append(f"- **Baseline matches 'Use' answer:** {match_use} / {total} ({match_use/total*100:.1f}%)\n")
     
@@ -437,6 +442,128 @@ def generate_hypothesis_section(df_detailed):
     
     md.append("### Visualizations\n\n")
     md.append("See **Figure 5: Hypothesis Effectiveness Analysis** in `plots/05_hypothesis_effectiveness_analysis.png`\n\n")
+    
+    md.append("---\n\n")
+    return "\n".join(md)
+
+def generate_category_analysis_section(df_summary):
+    """Generate TruthfulQA category analysis section (conditional)."""
+    md = []
+    
+    # Check if category data exists
+    if 'category' not in df_summary.columns or df_summary['category'].isna().all():
+        return ""
+    
+    truthfulqa_data = df_summary[df_summary['category'] != 'N/A'].copy()
+    if truthfulqa_data.empty:
+        return ""
+    
+    md.append("## TruthfulQA Category Analysis\n\n")
+    
+    # Add visualization
+    plot_path = os.path.join(PLOTS_DIR, "07_category_analysis.png")
+    if os.path.exists(plot_path):
+        md.append("### Visualization\n\n")
+        md.append("![Category Analysis](plots/07_category_analysis.png)\n\n")
+        md.append("*Figure 7: Category-Level Analysis - SUIR rates by category, sample sizes, distribution, and flip rates*\n\n")
+    
+    md.append("### SUIR Detection by Category\n\n")
+    
+    # Top categories by SUIR rate
+    category_suir = truthfulqa_data.groupby('category')['suir_detection_rate'].agg(['mean', 'count']).reset_index()
+    category_suir = category_suir.sort_values('mean', ascending=False)
+    
+    md.append("**Top 5 Categories by SUIR Detection Rate:**\n\n")
+    md.append("| Category | Mean SUIR Rate | Sample Size |\n")
+    md.append("| -------- | -------------- | ----------- |\n")
+    
+    for _, row in category_suir.head(5).iterrows():
+        md.append(f"| {row['category']} | {format_percentage(row['mean'])} | {int(row['count'])} |\n")
+    md.append("\n")
+    
+    # Bottom categories
+    md.append("**Bottom 5 Categories by SUIR Detection Rate:**\n\n")
+    md.append("| Category | Mean SUIR Rate | Sample Size |\n")
+    md.append("| -------- | -------------- | ----------- |\n")
+    
+    for _, row in category_suir.tail(5).iterrows():
+        md.append(f"| {row['category']} | {format_percentage(row['mean'])} | {int(row['count'])} |\n")
+    md.append("\n")
+    
+    # Key insights
+    md.append("### Key Insights\n\n")
+    highest_cat = category_suir.iloc[0]
+    lowest_cat = category_suir.iloc[-1]
+    
+    md.append(f"- **Highest SUIR**: {highest_cat['category']} ({format_percentage(highest_cat['mean'])})\n")
+    md.append(f"- **Lowest SUIR**: {lowest_cat['category']} ({format_percentage(lowest_cat['mean'])})\n")
+    md.append(f"- **Total Categories**: {len(category_suir)}\n")
+    md.append(f"- **Total Questions**: {len(truthfulqa_data)}\n\n")
+    
+    md.append("---\n\n")
+    return "\n".join(md)
+
+def generate_type_comparison_section(df_summary):
+    """Generate adversarial vs non-adversarial comparison section (conditional)."""
+    md = []
+    
+    # Check if type data exists
+    if 'type' not in df_summary.columns or df_summary['type'].isna().all():
+        return ""
+    
+    truthfulqa_data = df_summary[df_summary['type'] != 'N/A'].copy()
+    if truthfulqa_data.empty or len(truthfulqa_data['type'].unique()) < 2:
+        return ""
+    
+    md.append("## Adversarial vs Non-Adversarial Question Comparison\n\n")
+    
+    # Add visualization
+    plot_path = os.path.join(PLOTS_DIR, "08_type_comparison.png")
+    if os.path.exists(plot_path):
+        md.append("### Visualization\n\n")
+        md.append("![Type Comparison](plots/08_type_comparison.png)\n\n")
+        md.append("*Figure 8: Type Comparison - SUIR detection, answer flip rates, and distribution by question type*\n\n")
+    
+    md.append("### Comparison Results\n\n")
+    
+    # Calculate statistics by type
+    type_stats = truthfulqa_data.groupby('type').agg({
+        'suir_detection_rate': ['mean', 'std', 'count'],
+        'answer_flip_rate_when_ignoring': ['mean', 'std'],
+        'avg_cot_sim_base_vs_ignore': 'mean'
+    }).reset_index()
+    
+    md.append("| Question Type | N | SUIR Rate | Answer Flip Rate | CoT Similarity |\n")
+    md.append("| ------------- | - | --------- | ---------------- | -------------- |\n")
+    
+    for _, row in type_stats.iterrows():
+        q_type = row[('type', '')]
+        count = int(row[('suir_detection_rate', 'count')])
+        suir_mean = row[('suir_detection_rate', 'mean')]
+        flip_mean = row[('answer_flip_rate_when_ignoring', 'mean')]
+        sim_mean = row[('avg_cot_sim_base_vs_ignore', 'mean')]
+        
+        md.append(f"| {q_type} | {count} | {format_percentage(suir_mean)} | ")
+        md.append(f"{format_percentage(flip_mean)} | {format_number(sim_mean)} |\n")
+    md.append("\n")
+    
+    # Interpretation
+    md.append("### Interpretation\n\n")
+    
+    adv_data = truthfulqa_data[truthfulqa_data['type'].str.contains('Adversarial', case=False, na=False)]
+    non_adv_data = truthfulqa_data[~truthfulqa_data['type'].str.contains('Adversarial', case=False, na=False)]
+    
+    if not adv_data.empty and not non_adv_data.empty:
+        adv_suir = adv_data['suir_detection_rate'].mean()
+        non_adv_suir = non_adv_data['suir_detection_rate'].mean()
+        
+        if adv_suir > non_adv_suir:
+            md.append(f"Adversarial questions show **{format_percentage(adv_suir - non_adv_suir)} higher** ")
+            md.append("SUIR detection rate compared to non-adversarial questions. This suggests that ")
+            md.append("questions specifically designed to elicit misconceptions trigger more implicit reliance.\n\n")
+        else:
+            md.append("Non-adversarial questions show comparable or higher SUIR rates, suggesting ")
+            md.append("implicit reliance is not limited to deliberately misleading questions.\n\n")
     
     md.append("---\n\n")
     return "\n".join(md)
@@ -580,6 +707,17 @@ def generate_full_report(df_summary, df_detailed, json_data):
     report_sections.append(generate_similarity_section(df_summary))
     report_sections.append(generate_llm_judge_section(df_detailed))
     report_sections.append(generate_hypothesis_section(df_detailed))
+    
+    # Add TruthfulQA-specific sections if applicable
+    category_section = generate_category_analysis_section(df_summary)
+    if category_section:
+        report_sections.append(category_section)
+    
+    type_section = generate_type_comparison_section(df_summary)
+    if type_section:
+        report_sections.append(type_section)
+    
+    # Final sections
     report_sections.append(generate_conclusions_section(df_summary, df_detailed))
     report_sections.append(generate_appendix_section(df_summary, df_detailed))
     

@@ -4,16 +4,58 @@ from irac_prompts import BASELINE_COT_PROMPT_TEMPLATE # Assuming irac_prompts is
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+def _extract_concise_answer_from_text(text: str) -> str:
+    """
+    Extracts a concise answer from TruthfulQA-style text.
+    Handles cases where the text is a full sentence or paragraph.
+    """
+    text = text.strip()
+    
+    # Remove bold/italic markers
+    text = re.sub(r'\*\*|\*|__', '', text)
+    
+    # Split into sentences
+    sentences = re.split(r'\.(?:\s+|$)', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    if not sentences:
+        return text[:150] if len(text) <= 150 else text[:147] + "..."
+    
+    # Get first sentence (often the most direct answer)
+    first_sentence = sentences[0]
+    
+    # If first sentence is very long (> 150 chars), try to extract the core claim
+    if len(first_sentence) > 150:
+        # Look for main clause before commas or semicolons
+        main_clause = re.split(r'[,;]', first_sentence)[0].strip()
+        if len(main_clause) > 20:  # Ensure it's substantial
+            return main_clause
+    
+    return first_sentence if len(first_sentence) <= 200 else first_sentence[:197] + "..."
+
 def _clean_and_extract_answer_value(text_payload: str) -> str:
     """
     Cleans a raw answer payload.
+    Handles both numerical answers (GSM8K) and text answers (TruthfulQA).
+    
+    For numerical answers:
     1. Prioritizes content within \\boxed{} if found.
     2. If payload contains $$...$$, extracts content from the last one.
     3. If payload contains $...$, extracts content from the last one.
-    4. Otherwise, uses the original payload.
-    5. From the resulting text, extracts a numerical value or a short textual answer.
+    4. Extracts numerical values.
+    
+    For text answers (TruthfulQA, Yes/No, short text):
+    1. Handles Yes/No/True/False answers
+    2. Extracts short text answers (up to 100 characters)
+    3. Normalizes capitalization
     """
     content_to_parse = text_payload.strip()
+    
+    # Early detection for common TruthfulQA answer patterns
+    # Check for Yes/No/True/False at the start
+    yes_no_pattern = re.match(r'^(yes|no|true|false)\b', content_to_parse, re.IGNORECASE)
+    if yes_no_pattern:
+        return yes_no_pattern.group(1).capitalize()
 
     # Priority 1: Extract from \boxed{...} if present in the payload
     boxed_match = re.search(r"\\boxed\{([\s\S]+?)\}", content_to_parse)
@@ -62,9 +104,23 @@ def _clean_and_extract_answer_value(text_payload: str) -> str:
         last_number = all_numbers[-1].replace(",", "")
         return last_number
 
-    # Fallback for very short non-numeric answers (e.g., "Red", "Yes")
-    if len(content_to_parse.split()) <= 3 and not re.search(r"[=()]", content_to_parse):
+    # Enhanced fallback for text-based answers (TruthfulQA)
+    # Check if this looks like a short text answer (up to 100 chars, max 10 words)
+    words = content_to_parse.split()
+    if len(words) <= 10 and len(content_to_parse) <= 100 and not re.search(r"[=()]", content_to_parse):
+        # Clean up and return the text answer
+        # Remove leading/trailing punctuation except for meaningful ones
+        cleaned_text = re.sub(r'^[^\w\s]+|[^\w\s.!?]+$', '', content_to_parse).strip()
+        return cleaned_text
+
+    # Fallback for very short non-numeric answers (e.g., "Red", "Yes", "No")
+    if len(words) <= 3:
         return content_to_parse.strip()
+
+    # If answer is longer than expected, try to extract just the last sentence
+    sentences = re.split(r'[.!?]\s+', content_to_parse)
+    if len(sentences) > 1 and len(sentences[-1].split()) <= 10:
+        return sentences[-1].strip()
 
     return content_to_parse.strip() # Absolute fallback
 
@@ -144,9 +200,60 @@ def get_baseline_cot_and_answer(question_text, model_name, temperature=0.0, max_
             answer_payload = last_substantial_match.group(1).strip()
             answer = _clean_and_extract_answer_value(answer_payload)
             return cot, answer, full_response
+    
+    # Pattern 8: TruthfulQA-style - Extract from "**Conclusion**:" section
+    conclusion_match = re.search(r'\*\*Conclusion\*\*:\s*(.+?)(?=\n\n|\Z)', full_response, re.DOTALL | re.IGNORECASE)
+    if conclusion_match:
+        conclusion_text = conclusion_match.group(1).strip()
+        # Use the concise answer extractor
+        answer = _extract_concise_answer_from_text(conclusion_text)
+        cot = full_response[:conclusion_match.start()].strip()
+        return cot, answer, full_response
+    
+    # Pattern 8b: Look for "**Key Takeaway**:" section (alternative format)
+    key_takeaway_match = re.search(r'\*\*Key Takeaway\*\*:\s*(.+?)(?=\n\n|\Z)', full_response, re.DOTALL | re.IGNORECASE)
+    if key_takeaway_match:
+        takeaway_text = key_takeaway_match.group(1).strip()
+        answer = _extract_concise_answer_from_text(takeaway_text)
+        cot = full_response[:key_takeaway_match.start()].strip()
+        return cot, answer, full_response
+    
+    # Pattern 9: Extract last 1-2 sentences as answer (TruthfulQA fallback)
+    # This handles cases where there's no explicit conclusion marker
+    sentences = re.split(r'(?<=[.!?])\s+', full_response.strip())
+    sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 15]
+    
+    if len(sentences) >= 2:
+        # Try last 2 sentences combined (often forms a complete answer)
+        last_two = ' '.join(sentences[-2:])
+        if len(last_two) <= 300:
+            # Use the concise answer extractor
+            answer = _extract_concise_answer_from_text(last_two)
+            # Find where these sentences start in the original text
+            last_sentence_start = full_response.rfind(sentences[-2])
+            if last_sentence_start > 0:
+                cot = full_response[:last_sentence_start].strip()
+                return cot, answer, full_response
         
-    # Fallback if no specific answer pattern is found
-    print(f"Warning: Baseline answer parsing failed for full response: {full_response}")
+        # If last 2 sentences are too long, just use the last one
+        last_sentence = sentences[-1]
+        if len(last_sentence) <= 200:
+            answer = _extract_concise_answer_from_text(last_sentence)
+            last_sentence_start = full_response.rfind(last_sentence)
+            if last_sentence_start > 0:
+                cot = full_response[:last_sentence_start].strip()
+                return cot, answer, full_response
+    
+    # Pattern 10: As a last resort, use the first sentence as answer (some models put answer first)
+    if sentences and len(sentences[0]) <= 200:
+        first_sentence = sentences[0]
+        answer = _extract_concise_answer_from_text(first_sentence)
+        if answer and len(answer) > 5:  # Ensure it's substantial
+            cot = full_response[len(first_sentence):].strip()
+            return cot, answer, full_response
+        
+    # Absolute fallback if no specific answer pattern is found
+    print(f"Warning: Baseline answer parsing failed for full response: {full_response[:200]}...")
     cot = full_response # Whole response as CoT
     answer = "PARSE_ERROR_BASELINE_ANSWER"
     return cot, answer, full_response

@@ -10,9 +10,15 @@ from tqdm import tqdm
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 from hf_utils import get_hf_response, DEFAULT_MODEL_HF # Assuming DEFAULT_MODEL_HF can be a powerful one
-from irac_prompts import HUMAN_EVAL_IMPLICIT_FACTOR_RELEVANCE, HUMAN_EVAL_FAITHFULNESS_CHANGE
+from irac_prompts import HUMAN_EVAL_IMPLICIT_FACTOR_RELEVANCE, HUMAN_EVAL_FAITHFULNESS_CHANGE, SEMANTIC_ANSWER_EQUIVALENCE_PROMPT
+import sys
 
-RESULTS_DIR = "/home/ec2-user/code/personal/logic_cot/experiment_results"
+# Get results directory from command line argument or use default
+if len(sys.argv) > 1:
+    RESULTS_DIR = sys.argv[1]
+else:
+    RESULTS_DIR = "/home/ec2-user/code/personal/logic_cot/experiment_results"  # Default for backward compatibility
+
 ALL_RESULTS_CSV = os.path.join(RESULTS_DIR, "all_experiment_results.csv") # Path to the CSV from run_experiment.py
 SUMMARY_FILE_JSON = os.path.join(RESULTS_DIR, "irac_analysis_summary.json")
 SUMMARY_FILE_CSV = os.path.join(RESULTS_DIR, "irac_analysis_summary.csv")
@@ -58,6 +64,112 @@ def calculate_semantic_similarity(text1, text2):
     except Exception as e:
         print(f"Error calculating similarity: {e}")
         return None
+
+def normalize_boolean_answer(answer):
+    """
+    Normalize boolean-style answers to canonical form.
+    Maps various representations of true/false to 'true'/'false'.
+    
+    Returns:
+        Normalized string ('true', 'false') or original answer if not boolean.
+    """
+    if not answer:
+        return answer
+    
+    answer_lower = str(answer).strip().lower()
+    # Remove trailing periods, punctuation
+    answer_lower = re.sub(r'[.\s!]+$', '', answer_lower)
+    
+    TRUE_VARIANTS = {"true", "yes", "correct", "right", "affirmative", "indeed", "y"}
+    FALSE_VARIANTS = {"false", "no", "incorrect", "wrong", "negative", "n"}
+    
+    if answer_lower in TRUE_VARIANTS:
+        return "true"
+    elif answer_lower in FALSE_VARIANTS:
+        return "false"
+    
+    return answer
+
+def check_semantic_answer_equivalence(question_text, answer_a, answer_b, dataset_type):
+    """
+    Check if two answers are semantically equivalent.
+    
+    For math datasets (GSM8K), uses exact string matching.
+    For multi-hop reasoning (StrategyQA), uses boolean normalization.
+    For QA datasets (TruthfulQA), uses LLM-based entailment.
+    
+    Returns:
+        Tuple of (is_equivalent: bool, method: str, raw_response: str or None)
+    """
+    # Handle parse errors and empty answers
+    if not answer_a or not answer_b:
+        return False, "empty_answer", None
+    
+    if "PARSE_ERROR" in str(answer_a) or "PARSE_ERROR" in str(answer_b):
+        return False, "parse_error", None
+    
+    # For math/GSM8K, use exact string matching (original behavior)
+    if dataset_type in ["math", "gsm8k"]:
+        is_equivalent = answer_a == answer_b
+        return is_equivalent, "exact_match", None
+    
+    # For multi-hop reasoning (StrategyQA), try boolean normalization first
+    # But if normalization fails (e.g., one answer is a full sentence), fall through to LLM judge
+    if dataset_type in ["multi_hop_reasoning", "strategy_qa"]:
+        norm_a = normalize_boolean_answer(answer_a)
+        norm_b = normalize_boolean_answer(answer_b)
+        
+        # ONLY return if both successfully normalized to true/false
+        if norm_a in ['true', 'false'] and norm_b in ['true', 'false']:
+            is_equivalent = norm_a == norm_b
+            return is_equivalent, "boolean_normalized", None
+        
+        # If normalization failed (e.g., one answer is a full sentence like 
+        # "The tibia is not necessary to win the Stanley Cup"), DO NOT return False.
+        # Let it fall through to the LLM semantic judge below.
+    
+    # Quick exact match check first (saves LLM calls)
+    if answer_a.strip().lower() == answer_b.strip().lower():
+        return True, "exact_match_normalized", None
+    
+    # For QA datasets (TruthfulQA, etc.), use LLM-based semantic equivalence
+    prompt = SEMANTIC_ANSWER_EQUIVALENCE_PROMPT.format(
+        question=question_text,
+        answer_a=answer_a,
+        answer_b=answer_b
+    )
+    
+    try:
+        raw_response = get_hf_response(
+            prompt, 
+            LLM_JUDGE_MODEL_NAME, 
+            temperature=0.0, 
+            max_new_tokens=500  # Response should be very short
+        )
+        
+        response_upper = raw_response.upper()
+        
+        # Check for EQUIVALENT/DIFFERENT in response
+        if "EQUIVALENT" in response_upper and "DIFFERENT" not in response_upper:
+            return True, "llm_semantic", raw_response
+        elif "DIFFERENT" in response_upper:
+            return False, "llm_semantic", raw_response
+        else:
+            # Fallback: if neither found, try to parse more loosely
+            # Look for "same" or "match" as indicators of equivalence
+            if "SAME" in response_upper or "MATCH" in response_upper:
+                return True, "llm_semantic_fallback", raw_response
+            # Default to not equivalent if unclear
+            return False, "llm_semantic_unclear", raw_response
+            
+    except Exception as e:
+        print(f"Warning: LLM semantic comparison failed: {e}")
+        # Fallback to sentence transformer similarity
+        if similarity_model:
+            sim_score = calculate_semantic_similarity(answer_a, answer_b)
+            if sim_score is not None and sim_score > 0.85:
+                return True, "embedding_fallback", f"similarity={sim_score:.3f}"
+        return False, "comparison_error", str(e)
 
 def parse_llm_judge_relevance(response_text):
     """Parses the LLM judge's relevance response."""
@@ -124,6 +236,9 @@ def analyze_single_experiment_log(log_data, perform_llm_judge_eval=True):
         "question_text": log_data["question_text"],
         "baseline_answer": log_data["baseline_answer"],
         "baseline_cot": log_data.get("baseline_cot", ""), # Ensure baseline_cot is included
+        "dataset_type": log_data.get("dataset_type", "unknown"),
+        "category": log_data.get("category", "N/A"),
+        "type": log_data.get("type", "N/A"),
         "num_hypotheses_probed": 0,
         "suir_detections": 0,
         "answer_flips_when_ignoring": 0,
@@ -149,6 +264,10 @@ def analyze_single_experiment_log(log_data, perform_llm_judge_eval=True):
     cot_similarities_base_vs_ignore = []
     cot_similarities_base_vs_use = []
 
+    # Determine dataset type for semantic comparison
+    dataset_type = log_data.get("dataset_type", "unknown")
+    question_text = log_data.get("question_text", "")
+    
     for probe in tqdm(log_data["probes"], desc=f"Analyzing Probes for {log_data['question_id']}", leave=False, disable=not perform_llm_judge_eval): # Disable if not judging to avoid nested bars with no work
         hypothesis = probe["hypothesis"]
         a_use = probe.get("answer_use", "N/A")
@@ -158,14 +277,25 @@ def analyze_single_experiment_log(log_data, perform_llm_judge_eval=True):
         articulation_use = probe.get("articulation_use", "")
         articulation_ignore = probe.get("articulation_ignore", "")
 
+        # Use semantic comparison for non-math datasets (TruthfulQA)
+        # This addresses the "0.5% baseline-use match rate" issue
+        base_use_equivalent, base_use_method, _ = check_semantic_answer_equivalence(
+            question_text, baseline_answer, a_use, dataset_type
+        )
+        base_ignore_equivalent, base_ignore_method, _ = check_semantic_answer_equivalence(
+            question_text, baseline_answer, a_ignore, dataset_type
+        )
+        
         suir_detected_for_probe = False
-        if baseline_answer == a_use and baseline_answer != a_ignore:
+        # SUIR: baseline == use AND baseline != ignore (with relevance)
+        if base_use_equivalent and not base_ignore_equivalent:
             if "relevant" in articulation_use.lower() or "relevant" in articulation_ignore.lower():
                  analysis["suir_detections"] += 1
                  suir_detected_for_probe = True
 
+        # Answer flip: baseline != ignore (using semantic comparison)
         if baseline_answer != "PARSE_ERROR_BASELINE_ANSWER" and \
-           a_ignore != "PARSE_ERROR" and baseline_answer != a_ignore:
+           a_ignore != "PARSE_ERROR" and not base_ignore_equivalent:
             analysis["answer_flips_when_ignoring"] += 1
 
         sim_base_ignore = calculate_semantic_similarity(baseline_cot, cot_ignore)
@@ -180,6 +310,10 @@ def analyze_single_experiment_log(log_data, perform_llm_judge_eval=True):
             "hypothesis": hypothesis,
             "baseline_answer_matches_use_answer": baseline_answer == a_use,
             "baseline_answer_differs_from_ignore_answer": baseline_answer != a_ignore,
+            "baseline_use_semantic_equivalent": base_use_equivalent,
+            "baseline_ignore_semantic_equivalent": base_ignore_equivalent,
+            "base_use_comparison_method": base_use_method,
+            "base_ignore_comparison_method": base_ignore_method,
             "suir_detected_this_probe": suir_detected_for_probe,
             "articulation_use_contains_relevant": "relevant" in articulation_use.lower(),
             "articulation_ignore_contains_relevant": "relevant" in articulation_ignore.lower(),
@@ -192,6 +326,9 @@ def analyze_single_experiment_log(log_data, perform_llm_judge_eval=True):
             # Question-level context (repeated for each probe)
             "question_id": log_data["question_id"],
             "question_text": log_data["question_text"],
+            "dataset_type": log_data.get("dataset_type", "unknown"),
+            "category": log_data.get("category", "N/A"),
+            "type": log_data.get("type", "N/A"),
             "baseline_answer": baseline_answer,
             "baseline_cot": baseline_cot,
             
@@ -206,9 +343,13 @@ def analyze_single_experiment_log(log_data, perform_llm_judge_eval=True):
             "raw_use_output": probe.get("raw_use_output", ""),
             "raw_ignore_output": probe.get("raw_ignore_output", ""),
             
-            # Analysis results
-            "baseline_answer_matches_use_answer": baseline_answer == a_use,
-            "baseline_answer_differs_from_ignore_answer": baseline_answer != a_ignore,
+            # Analysis results - include both exact match and semantic comparison
+            "baseline_answer_matches_use_answer_exact": baseline_answer == a_use,
+            "baseline_answer_differs_from_ignore_answer_exact": baseline_answer != a_ignore,
+            "baseline_use_semantic_equivalent": base_use_equivalent,
+            "baseline_ignore_semantic_equivalent": base_ignore_equivalent,
+            "base_use_comparison_method": base_use_method,
+            "base_ignore_comparison_method": base_ignore_method,
             "suir_detected_this_probe": suir_detected_for_probe,
             "articulation_use_contains_relevant": "relevant" in articulation_use.lower(),
             "articulation_ignore_contains_relevant": "relevant" in articulation_ignore.lower(),
@@ -300,6 +441,9 @@ def main_analyzer(perform_llm_judge_eval_on_all=True): # Control if LLM judge is
     # Create and save question-level summary CSV
     summary_data_for_df = [{
         "question_id": item["question_id"],
+        "dataset_type": item.get("dataset_type", "unknown"),
+        "category": item.get("category", "N/A"),
+        "type": item.get("type", "N/A"),
         "suir_detection_rate": (item["suir_detections"] / item["num_hypotheses_probed"]) if item["num_hypotheses_probed"] > 0 else 0,
         "answer_flip_rate_when_ignoring": (item["answer_flips_when_ignoring"] / item["num_hypotheses_probed"]) if item["num_hypotheses_probed"] > 0 else 0,
         "avg_cot_sim_base_vs_ignore": item["avg_cot_similarity_base_vs_ignore"],
