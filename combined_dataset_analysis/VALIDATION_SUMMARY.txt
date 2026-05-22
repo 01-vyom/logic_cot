@@ -1,0 +1,6 @@
+total_questions: 2823
+total_probes: 8439
+summary_rows: 2823
+detail_rows: 8439
+figures: 6
+examples: 12
