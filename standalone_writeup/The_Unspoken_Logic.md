@@ -44,7 +44,7 @@ The measured claim is behavioral: the output answer varies with use/ignore instr
 
 The method was run at probe level. Each detailed probe row corresponds to one candidate premise for one question; most probed questions had three candidate premises. The combined run contains **8,439 probes** over **2,813 questions with detailed probes**. Ten additional summary rows had no detailed probes, giving **2,823 summary questions** overall.
 
-Before running the combined analysis, two outcomes seemed plausible. If ignore probes rarely changed answers, the generated premises would mostly be irrelevant. If ignore probes changed answers often, the key question would be whether those changes reflected interpretable premise sensitivity or artifacts from awkward prompting and answer parsing. The second outcome is what happened.
+At the outset, two outcomes seemed plausible. If ignore probes rarely changed answers, the generated premises would mostly be irrelevant. If ignore probes changed answers often, the key question would be whether those changes reflected interpretable premise sensitivity or artifacts from awkward prompting and answer parsing. The second outcome is what happened.
 
 ## RQ2: How Often Do Use/Ignore Probes Change Answers Across Datasets?
 
@@ -174,18 +174,31 @@ The combined experiment suggests a practical workflow. Use broad answer non-equi
 
 ## Future Work
 
-The next step is not more aggregate plotting. It is annotation.
-
-1. Human-label a stratified sample of raw triggers, parser-filtered candidates, and non-trigger answer changes.
-2. Label premise validity separately from baseline omission or underemphasis.
-3. Improve answer parsing for TruthfulQA-style free-form answers.
-4. Generate object-level premises rather than meta-hypotheses like "the model might assume..."
-5. Build a small controlled benchmark where the structural premise is known by construction.
+The next step is annotation: human-labeling a stratified sample of raw triggers, parser-filtered candidates, and non-trigger answer changes; separating premise validity from baseline omission or underemphasis; improving answer parsing for TruthfulQA-style free-form answers; generating object-level premises rather than meta-hypotheses like "the model might assume..."; and building a small controlled benchmark where the structural premise is known by construction.
 
 Only after those checks would it be reasonable to turn candidate premise sensitivity into a stronger claim about structural unfaithfulness.
 
-## Data Artifacts And Related Work
+## Appendix: Additional Diagnostics
 
-- Full combined analysis artifact: [IRAC_MULTI_DATASET_REPORT.md](../combined_dataset_analysis/IRAC_MULTI_DATASET_REPORT.md)
+The figures below summarize secondary diagnostics from the same three-dataset analysis. They are included to make the aggregate patterns easier to inspect, but they should not be read as additional validation. Here, a strict trigger means `baseline = use != ignore`; it remains a candidate premise-sensitivity label unless human review also confirms that the baseline made the premise absent, buried, or hard to audit.
+
+![Cross-dataset strict-trigger and answer-change rates](assets/04_cross_dataset_rates.png)
+
+**Figure A1.** Cross-dataset strict-trigger and answer-movement rates. TruthfulQA has the largest answer-movement rate, while StrategyQA has the largest strict-trigger rate. The gap reinforces why answer flips alone are too broad.
+
+![CoT semantic similarity by dataset](assets/05_cot_similarity_by_dataset.png)
+
+**Figure A2.** Mean embedding similarity between baseline CoT and use/ignore CoTs. The averages show how much the surface reasoning can remain close under the intervention, but they do not show whether the baseline made a premise auditable.
+
+![LLM judge outcomes across datasets](assets/06_llm_judge_stacked_bars.png)
+
+**Figure A3.** LLM-judge labels for generated hypothesis relevance and judged faithfulness shifts after ignore probes. High relevance rates suggest generated premises were usually on-topic. The judge result is still only a diagnostic; it is not a substitute for human labels.
+
+![High-similarity candidate examples](assets/07_high_similarity_suir_examples.png)
+
+**Figure A4.** High-similarity strict-trigger examples. The table shows cases where the answer changed while baseline-vs-ignore reasoning remained semantically close. These examples are useful for qualitative review; the RQ4 examples above provide the cleaner narrative set.
+
+## Related Work
+
 - Turpin et al. (2023), [Language Models Don't Always Say What They Think: Unfaithful Explanations in Chain-of-Thought Prompting](https://arxiv.org/abs/2305.04388)
 - Lanham et al. (2023), [Measuring Faithfulness in Chain-of-Thought Reasoning](https://arxiv.org/abs/2307.13702)
