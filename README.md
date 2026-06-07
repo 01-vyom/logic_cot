@@ -56,7 +56,7 @@
 
 5. **Report**
 
-   [Report](https://docs.google.com/document/d/11slXsU6zePR99AJp8ARvFP4Dv61v_bAjTvYNxcfPdh4/edit?usp=sharing)
+   [Report](standalone_writeup/The_Unspoken_Logic.md)
 
 
 Steps to Implement:
