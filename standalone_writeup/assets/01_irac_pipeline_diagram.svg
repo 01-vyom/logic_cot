@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">IRAC premise-sensitivity probing workflow</title>
+  <desc id="desc">A workflow diagram showing baseline response, candidate premise generation, use and ignore probes, answer comparison, artifact filtering, and human review.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .bg { fill: #f7f9fb; }
+      .band { fill: #e8edf3; }
+      text { font-family: Arial, Helvetica, sans-serif; }
+      .title { font-size: 42px; font-weight: 700; fill: #17202a; }
+      .subtitle { font-size: 20px; font-weight: 400; fill: #52606d; }
+      .section { font-size: 20px; font-weight: 700; fill: #1f2933; }
+      .body { font-size: 17px; font-weight: 400; fill: #334155; }
+      .small { font-size: 15px; font-weight: 400; fill: #52606d; }
+      .metric { font-size: 28px; font-weight: 700; fill: #17202a; }
+      .metric-label { font-size: 15px; font-weight: 400; fill: #52606d; }
+      .card { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 12; filter: url(#shadow); }
+      .input { fill: #eef6ff; stroke: #93c5fd; }
+      .premise { fill: #fff7ed; stroke: #fdba74; }
+      .use { fill: #ecfdf5; stroke: #86efac; }
+      .ignore { fill: #fef2f2; stroke: #fca5a5; }
+      .compare { fill: #f8fafc; stroke: #94a3b8; }
+      .review { fill: #f5f3ff; stroke: #c4b5fd; }
+      .chip { fill: #0f172a; opacity: 0.08; }
+      .arrow { stroke: #334155; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .soft-arrow { stroke: #64748b; stroke-width: 2.5; fill: none; marker-end: url(#arrow); stroke-dasharray: 7 7; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1600" height="900"/>
+  <rect class="band" width="1600" height="132"/>
+  <text class="title" x="64" y="68">IRAC Premise-Sensitivity Probe</text>
+  <text class="subtitle" x="64" y="102">Generate a premise, contrast use vs. ignore prompts, then filter noisy answer movement before human review.</text>
+
+  <rect class="card input" x="70" y="210" width="260" height="132"/>
+  <text class="section" x="96" y="252">Question</text>
+  <text class="body" x="96" y="284">Task input from GSM8K,</text>
+  <text class="body" x="96" y="308">StrategyQA, or TruthfulQA</text>
+
+  <rect class="card input" x="430" y="190" width="300" height="172"/>
+  <text class="section" x="456" y="232">Baseline response</text>
+  <text class="body" x="456" y="264">Normal chain-of-thought</text>
+  <text class="body" x="456" y="288">and final answer</text>
+  <rect class="chip" x="456" y="315" width="196" height="28" rx="14"/>
+  <text class="small" x="470" y="335">A_base, C_base</text>
+
+  <rect class="card premise" x="820" y="190" width="320" height="172"/>
+  <text class="section" x="846" y="232">Candidate premise</text>
+  <text class="body" x="846" y="264">Generated assumption,</text>
+  <text class="body" x="846" y="288">shortcut, or frame that</text>
+  <text class="body" x="846" y="312">could affect the answer</text>
+
+  <rect class="card use" x="360" y="470" width="330" height="176"/>
+  <text class="section" x="386" y="512">Use-premise probe</text>
+  <text class="body" x="386" y="544">Ask the model to rely on</text>
+  <text class="body" x="386" y="568">the candidate premise</text>
+  <rect class="chip" x="386" y="598" width="184" height="28" rx="14"/>
+  <text class="small" x="400" y="618">A_use, C_use</text>
+
+  <rect class="card ignore" x="820" y="470" width="330" height="176"/>
+  <text class="section" x="846" y="512">Ignore-premise probe</text>
+  <text class="body" x="846" y="544">Ask the model to avoid</text>
+  <text class="body" x="846" y="568">that same premise</text>
+  <rect class="chip" x="846" y="598" width="198" height="28" rx="14"/>
+  <text class="small" x="860" y="618">A_ignore, C_ignore</text>
+
+  <rect class="card compare" x="1210" y="302" width="300" height="182"/>
+  <text class="section" x="1236" y="344">Strict trigger</text>
+  <text class="body" x="1236" y="376">Candidate is flagged when:</text>
+  <text class="body" x="1236" y="410">baseline = use</text>
+  <text class="body" x="1236" y="438">baseline != ignore</text>
+
+  <rect class="card review" x="1210" y="578" width="300" height="182"/>
+  <text class="section" x="1236" y="620">Review, not proof</text>
+  <text class="body" x="1236" y="652">Remove parser artifacts,</text>
+  <text class="body" x="1236" y="676">then ask whether the</text>
+  <text class="body" x="1236" y="700">baseline made the premise</text>
+  <text class="body" x="1236" y="724">auditable.</text>
+
+  <path class="arrow" d="M330 276 H430"/>
+  <path class="arrow" d="M730 276 H820"/>
+  <path class="soft-arrow" d="M982 362 C930 416 720 440 620 470"/>
+  <path class="soft-arrow" d="M982 362 C1050 416 1010 440 985 470"/>
+  <path class="arrow" d="M690 558 H820"/>
+  <path class="arrow" d="M1150 558 C1195 536 1210 482 1210 428"/>
+  <path class="arrow" d="M1360 484 V578"/>
+
+  <rect x="70" y="724" width="1068" height="102" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text class="section" x="96" y="764">Study scale and interpretation</text>
+  <text class="metric" x="96" y="805">2,823</text>
+  <text class="metric-label" x="190" y="805">questions</text>
+  <text class="metric" x="340" y="805">8,439</text>
+  <text class="metric-label" x="438" y="805">premise probes</text>
+  <text class="metric" x="634" y="805">53.6%</text>
+  <text class="metric-label" x="732" y="805">raw answer movement</text>
+  <text class="metric" x="946" y="805">7.3%</text>
+  <text class="metric-label" x="1028" y="805">parser-filtered candidates</text>
+</svg>

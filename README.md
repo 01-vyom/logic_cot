@@ -1,5 +1,7 @@
 # logic_cot
 
+![IRAC premise-sensitivity probing workflow](standalone_writeup/assets/01_irac_pipeline_diagram.png)
+
 1. **Title:**  
     The Unspoken Logic: Detecting Structural Unfaithfulness and Implicit Reliance in LLM Reasoning
 

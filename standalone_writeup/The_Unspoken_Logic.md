@@ -33,6 +33,10 @@ IRAC stands for **Implicit Reliance Articulation & Contrast**. For each question
 3. **Use probe:** ask the model to explicitly use one candidate premise.
 4. **Ignore probe:** ask the model to explicitly avoid relying on that same candidate premise.
 
+![IRAC premise-sensitivity probing workflow](assets/01_irac_pipeline_diagram.png)
+
+**Figure 1.** IRAC premise-sensitivity workflow. The method compares a baseline answer with use-premise and ignore-premise probes, then treats strict triggers as candidates for artifact filtering and human review rather than automatic proof of structural unfaithfulness.
+
 A raw IRAC trigger occurs when:
 
 ```text
@@ -54,7 +58,7 @@ Across all summary rows, **1,514 / 2,823 questions (53.6%)** had at least one ig
 
 ![Question outcomes under ignore-premise probes](assets/03_question_outcome_buckets.png)
 
-**Figure 1.** Question-level outcomes under ignore-premise probes. A question is counted as a raw IRAC trigger if any probe matched `baseline = use != ignore`. If no raw trigger fired, it is counted as "other answer change" when at least one ignore answer differed from baseline. This figure is raw and question-level; it does not apply artifact filtering.
+**Figure 2.** Question-level outcomes under ignore-premise probes. A question is counted as a raw IRAC trigger if any probe matched `baseline = use != ignore`. If no raw trigger fired, it is counted as "other answer change" when at least one ignore answer differed from baseline. This figure is raw and question-level; it does not apply artifact filtering.
 
 The dataset pattern matters. GSM8K has the most stable answers: **399 / 1,319 questions (30.3%)** changed under ignore prompting. StrategyQA is more sensitive: **407 / 687 (59.2%)** changed. TruthfulQA is the least stable under this intervention: **708 / 817 (86.7%)** changed, but most of that movement did not satisfy the stricter raw trigger criterion.
 
@@ -66,7 +70,7 @@ Raw IRAC triggers are also too broad. The main failure mode is simple: the ignor
 
 ![Raw IRAC trigger filtering](assets/02_raw_trigger_filtering.png)
 
-**Figure 2.** Probe-level split of raw IRAC triggers. The artifact filter used here removes raw triggers whose ignore answer was exactly `U` or contained `PARSE_ERROR`. The remaining parser-filtered candidates are still not validated SUIR cases; they are the subset worth manual review.
+**Figure 3.** Probe-level split of raw IRAC triggers. The artifact filter used here removes raw triggers whose ignore answer was exactly `U` or contained `PARSE_ERROR`. The remaining parser-filtered candidates are still not validated SUIR cases; they are the subset worth manual review.
 
 | Dataset | Summary questions | Probed questions | Probes | Raw triggered questions (of summary rows) | Raw triggered probes | Parser-filtered candidate probes | Parser-filtered candidate questions (of probed questions) |
 |---|---:|---:|---:|---:|---:|---:|---:|
